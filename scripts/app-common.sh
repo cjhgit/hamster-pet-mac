@@ -1,14 +1,14 @@
 #!/bin/bash
 # Shared by run.sh and install.sh; compatible with macOS's bundled Bash.
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="hamster-mac"
+APP_NAME="Hamster Pet"
 APP_PATH="$PROJECT_DIR/.build/Build/Products/Release/$APP_NAME.app"
 
 build_app() {
     echo "正在构建 Release 应用……"
     xcodebuild -quiet \
         -project "$PROJECT_DIR/hamster-mac.xcodeproj" \
-        -scheme "$APP_NAME" \
+        -scheme "hamster-mac" \
         -configuration Release \
         -destination 'platform=macOS' \
         -derivedDataPath "$PROJECT_DIR/.build" \
@@ -22,7 +22,7 @@ build_app() {
 
 stop_app() {
     local pids status pid attempt alive
-    if pids="$(pgrep -x "$APP_NAME")"; then
+    if pids="$(pgrep -x "$APP_NAME|hamster-mac")"; then
         echo "正在结束旧进程……"
     else
         status=$?

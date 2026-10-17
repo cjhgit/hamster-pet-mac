@@ -26,7 +26,7 @@ final class HamsterWindow: NSWindow, NSWindowDelegate {
         super.init(contentRect: NSRect(origin: .zero, size: size),
                    styleMask: [.borderless, .resizable, .miniaturizable, .closable],
                    backing: .buffered, defer: false)
-        title = "Canvas 仓鼠"
+        title = "Hamster Pet"
         minSize = NSSize(width: 320, height: 320 * 212 / 282)
         contentAspectRatio = NSSize(width: 282, height: 212)
         isReleasedWhenClosed = false

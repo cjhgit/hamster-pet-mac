@@ -1,4 +1,4 @@
-# Canvas 仓鼠 · macOS 原生版
+# Hamster Pet · macOS 原生仓鼠
 
 参考 `../hamster-html/README.md` 与对应源码实现的 macOS 应用。界面由 **AppKit + Core Graphics / Core Text** 原生绘制，仓鼠几何、行为状态机和物理算法转换为本地编译的 C++。不使用 WebKit、JavaScriptCore、网页、Flash 或远程脚本。
 
@@ -14,7 +14,7 @@
 ./run.sh --hamster-query 'up_bodyColor=E6DEBE&up_wheelOuterColor=E33332'
 ```
 
-构建并安装完整 `.app` 到 `/Applications/hamster-mac.app`：
+构建并安装完整 `.app` 到 `/Applications/Hamster Pet.app`：
 
 ```sh
 ./install.sh
@@ -28,7 +28,7 @@
 xcodebuild -project hamster-mac.xcodeproj -scheme hamster-mac \
   -configuration Release -destination 'platform=macOS' \
   -derivedDataPath .build CODE_SIGN_IDENTITY=- build
-open .build/Build/Products/Release/hamster-mac.app
+open ".build/Build/Products/Release/Hamster Pet.app"
 ```
 
 ## 交互与外观
@@ -48,7 +48,7 @@ open .build/Build/Products/Release/hamster-mac.app
 原来的 13 项颜色参数可用启动参数传入，取值仍为六位十六进制颜色：
 
 ```sh
-open .build/Build/Products/Release/hamster-mac.app --args \
+open ".build/Build/Products/Release/Hamster Pet.app" --args \
   --hamster-query 'up_bodyColor=E6DEBE&up_wheelOuterColor=E33332'
 ```
 

@@ -15,11 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = NSMenu()
-        let appItem = NSMenuItem()
-        let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "隐藏仓鼠", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let appItem = NSMenuItem(title: "Hamster Pet", action: nil, keyEquivalent: "")
+        let appMenu = NSMenu(title: "Hamster Pet")
+        appMenu.addItem(withTitle: "隐藏 Hamster Pet", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "退出仓鼠", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "退出 Hamster Pet", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         menu.addItem(appItem)
         NSApp.mainMenu = menu
