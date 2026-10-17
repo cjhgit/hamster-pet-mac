@@ -11,7 +11,7 @@ import CoreText
         let suiteName = "hamster.snapshot.\(UUID().uuidString)"
         let preferences = UserDefaults(suiteName: suiteName)!
         defer { preferences.removePersistentDomain(forName: suiteName) }
-        let view = HamsterView(frame: NSRect(x: 0, y: 0, width: 742, height: 550), seed: 11042, preferences: preferences)
+        let view = HamsterView(frame: NSRect(x: 0, y: 0, width: 742, height: 550), seed: 11042, preferences: preferences, prefers3D: false)
         let window = HamsterWindow(preferences: preferences)
         window.contentView = view
         precondition(!window.styleMask.contains(.titled) && window.canBecomeKey && window.canBecomeMain)
@@ -84,11 +84,11 @@ import CoreText
         view.setFrameSize(window.frame.size)
         let hidden = view.captureSnapshot()!
         try hidden.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "/private/tmp/hamster-native-no-watermark.png"))
-        let restoredView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!)
+        let restoredView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!, prefers3D: false)
         precondition(HamsterTestWatermarkVisible() == 0 && restoredView.menu(for: contextEvent)!.item(at: 2)!.state == .off)
         contextMenu().performActionForItem(at: 2)
         precondition(HamsterTestWatermarkVisible() == 1)
-        let visibleView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!)
+        let visibleView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!, prefers3D: false)
         precondition(HamsterTestWatermarkVisible() == 1 && visibleView.menu(for: contextEvent)!.item(at: 2)!.state == .on)
         print("PASS: watermark visibility toggles in engine and persists when hidden or shown")
         func capture(_ target: HamsterView) -> NSBitmapImageRep {
@@ -109,13 +109,13 @@ import CoreText
         precondition(brightness(72, 178) > 0.18 && brightness(72, 178) < 0.35 && brightness(257, 49) < 0.65)
         precondition(abs(brightness(220, 49) - brightness(72, 178)) < 0.03)
         precondition(brightness(25, 60) > brightness(72, 178) && brightness(25, 60) < 0.65)
-        let nightView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!)
+        let nightView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!, prefers3D: false)
         precondition(nightView.menu(for: contextEvent)!.item(at: 3)!.state == .on)
         nightView.setFrameSize(HamsterWindow.sizes[0].size)
         try capture(nightView).representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "/private/tmp/hamster-native-night-small.png"))
         contextMenu().performActionForItem(at: 3)
         precondition(capture(view).representation(using: .png, properties: [:]) == daylight.representation(using: .png, properties: [:]))
-        let dayView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!)
+        let dayView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!, prefers3D: false)
         precondition(dayView.menu(for: contextEvent)!.item(at: 3)!.state == .off)
         print("PASS: night lighting falls off with distance, day/night restore exactly, and theme preferences persist")
         let appDelegate = AppDelegate(preferences: preferences)

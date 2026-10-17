@@ -2,6 +2,7 @@ import AppKit
 import CoreText
 import MetalKit
 import QuartzCore
+import SceneKit
 import SwiftUI
 
 final class HamsterWindow: NSWindow, NSWindowDelegate {
@@ -62,7 +63,7 @@ struct HamsterCanvas: NSViewRepresentable {
 }
 
 /// AppKit input with on-demand Metal rendering and a Core Graphics fallback.
-final class HamsterView: NSView {
+final class HamsterView: NSView, NSMenuItemValidation {
     private let engine: UnsafeMutableRawPointer
     private let preferences: UserDefaults
     private static let watermarkKey = "hamster.showsWatermark"
@@ -72,6 +73,17 @@ final class HamsterView: NSView {
     private var timer: Timer?
     private var visibilityWatchdog: Timer?
     private var metalRenderer: HamsterMetalRenderer?
+    private(set) var scene3D: Hamster3DScene?
+    private var orbitStart: NSPoint?
+    private var orbitPrevious = NSPoint.zero
+    private var orbitDragged = false
+    private let sceneHint = CATextLayer()
+    private let playbackControls = NSStackView()
+    private let playButton = NSButton(title: "暂停", target: nil, action: nil)
+    private let stepButton = NSButton(title: "下一帧", target: nil, action: nil)
+    private let playbackPosition = NSTextField(labelWithString: "")
+    private(set) var isPlaybackPaused = false
+    private let watermarkLayer = CATextLayer()
     private let lampLayer = CALayer()
     private let focusLayer = CAShapeLayer()
     private var lampPixelScale: CGFloat = 0
@@ -104,7 +116,7 @@ final class HamsterView: NSView {
         self.init(frame: frameRect, seed: UInt32.random(in: .min ... .max))
     }
 
-    init(frame frameRect: NSRect, seed: UInt32, preferences: UserDefaults = .standard, prefersMetal: Bool = true) {
+    init(frame frameRect: NSRect, seed: UInt32, preferences: UserDefaults = .standard, prefersMetal: Bool = true, prefers3D: Bool = true) {
         self.preferences = preferences
         engine = HamsterEngineCreate(seed)!
         super.init(frame: frameRect)
@@ -123,7 +135,26 @@ final class HamsterView: NSView {
         isDarkMode = preferences.bool(forKey: Self.darkModeKey)
         updateWatermark()
         setAccessibilityHelp("点击空白处投食，按住拖动或抛出食物；点击黄色轮心让仓鼠上跑轮。移动鼠标可唤醒仓鼠。")
-        if prefersMetal && !ProcessInfo.processInfo.arguments.contains("--hamster-cpu-renderer"),
+        if prefers3D && !ProcessInfo.processInfo.arguments.contains("--hamster-cpu-renderer") {
+            let renderer = Hamster3DScene(engine: engine)
+            scene3D = renderer
+            addSubview(renderer.view)
+            configurePlaybackControls()
+            sceneHint.string = "拖动旋转 · 滚轮缩放 · ⇧拖动平移 · ⌘拖动食物 · 0 复位"
+            sceneHint.fontSize = 10
+            sceneHint.alignmentMode = .center
+            sceneHint.foregroundColor = NSColor.secondaryLabelColor.cgColor
+            sceneHint.zPosition = 10
+            layer?.addSublayer(sceneHint)
+            watermarkLayer.string = "aBowman"
+            watermarkLayer.font = NSFont(name: "IcicleCountry2", size: 15) ?? NSFont.boldSystemFont(ofSize: 15)
+            watermarkLayer.fontSize = 15
+            watermarkLayer.alignmentMode = .right
+            watermarkLayer.zPosition = 10
+            layer?.addSublayer(watermarkLayer)
+            setAccessibilityHelp("真实 3D 场景。空格暂停或继续，暂停后按右方向键或句点前进一帧。暂停时仍可拖动旋转视角、滚轮缩放、Shift 拖动平移。播放时点击投食、Command 拖动食物。数字 0 复位，1 立体，2 右侧，3 背面，4 俯视，5 左侧，6 仓鼠特写。")
+            update3DLayout()
+        } else if prefersMetal && !ProcessInfo.processInfo.arguments.contains("--hamster-cpu-renderer"),
            let renderer = HamsterMetalRenderer(engine: engine) {
             metalRenderer = renderer
             addSubview(renderer.view)
@@ -143,6 +174,7 @@ final class HamsterView: NSView {
             NSWorkspace.shared.open(Self.authorURL)
         })] : [])
         window?.invalidateCursorRects(for: self)
+        watermarkLayer.isHidden = !showsWatermark
         needsDisplay = true
     }
 
@@ -175,6 +207,7 @@ final class HamsterView: NSView {
         visibilityWatchdog = nil
         if let window {
             window.acceptsMouseMovedEvents = true
+            window.makeFirstResponder(self)
             for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification,
                          NSWindow.didDeminiaturizeNotification, NSWindow.didBecomeKeyNotification,
                          NSWindow.didResignKeyNotification] {
@@ -205,7 +238,7 @@ final class HamsterView: NSView {
     }
 
     private func refreshActivity() {
-        if isAnimationVisible {
+        if isAnimationVisible && !isPlaybackPaused {
             startAnimation()
         } else {
             suspendAnimation()
@@ -213,6 +246,7 @@ final class HamsterView: NSView {
     }
 
     private func startAnimation() {
+        guard !isPlaybackPaused else { return }
         visibilityWatchdog?.invalidate()
         visibilityWatchdog = nil
         guard timer == nil else { return }
@@ -238,6 +272,11 @@ final class HamsterView: NSView {
             HamsterEnginePurgeRenderCache(engine)
             metalRenderer?.releaseDrawables()
         }
+        if isPlaybackPaused {
+            visibilityWatchdog?.invalidate()
+            visibilityWatchdog = nil
+            return
+        }
         guard window != nil, visibilityWatchdog == nil else { return }
         let watchdog = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshActivity() }
@@ -248,7 +287,7 @@ final class HamsterView: NSView {
     }
 
     private func tick() {
-        guard isAnimationVisible else {
+        guard isAnimationVisible && !isPlaybackPaused else {
             suspendAnimation()
             return
         }
@@ -266,17 +305,88 @@ final class HamsterView: NSView {
             advanced = true
         }
         if advanced {
-            if let renderer = metalRenderer, !renderer.failed {
-                renderer.night = isDarkMode
-                renderer.view.draw()
-            } else {
-                if let renderer = metalRenderer {
-                    renderer.view.removeFromSuperview()
-                    metalRenderer = nil
-                }
-                needsDisplay = true
-            }
+            displaySimulationFrame()
         }
+    }
+
+    private func displaySimulationFrame() {
+        if let scene3D {
+            scene3D.update(night: isDarkMode)
+        } else if let renderer = metalRenderer, !renderer.failed {
+            renderer.night = isDarkMode
+            renderer.view.draw()
+        } else {
+            if let renderer = metalRenderer {
+                renderer.view.removeFromSuperview()
+                metalRenderer = nil
+            }
+            needsDisplay = true
+        }
+        if isPlaybackPaused { updatePlaybackControls() }
+    }
+
+    private func configurePlaybackControls() {
+        // Keep native controls above SceneKit's Metal-backed rendering layer.
+        playbackControls.wantsLayer = true
+        playbackControls.layer?.zPosition = 10
+        playbackControls.layer?.cornerRadius = 6
+        playbackControls.edgeInsets = NSEdgeInsets(top: 4, left: 6, bottom: 4, right: 6)
+        playbackControls.orientation = .horizontal
+        playbackControls.spacing = 7
+        playbackControls.translatesAutoresizingMaskIntoConstraints = false
+        for (button, action, identifier) in [
+            (playButton, #selector(togglePlayback(_:)), "playback-toggle"),
+            (stepButton, #selector(advanceOneFrame(_:)), "playback-step")
+        ] {
+            button.target = self
+            button.action = action
+            button.identifier = NSUserInterfaceItemIdentifier(identifier)
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: 11)
+            playbackControls.addArrangedSubview(button)
+        }
+        playButton.toolTip = "暂停 / 继续（空格）"
+        stepButton.toolTip = "暂停时前进一帧（→ 或 .）"
+        playbackPosition.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        playbackPosition.textColor = .secondaryLabelColor
+        playbackControls.addArrangedSubview(playbackPosition)
+        addSubview(playbackControls)
+        NSLayoutConstraint.activate([
+            playbackControls.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            playbackControls.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -26)
+        ])
+        updatePlaybackControls()
+    }
+
+    private func updatePlaybackControls() {
+        playButton.title = isPlaybackPaused ? "继续" : "暂停"
+        stepButton.isEnabled = isPlaybackPaused
+        playbackPosition.isHidden = !isPlaybackPaused
+        playbackPosition.stringValue = "第 \(simulationFrames) 帧"
+    }
+
+    @objc private func togglePlayback(_ sender: Any?) {
+        releaseFood()
+        authorFocused = false
+        orbitStart = nil
+        isPlaybackPaused.toggle()
+        refreshActivity()
+        updatePlaybackControls()
+        update3DLayout()
+        window?.makeFirstResponder(self)
+    }
+
+    @objc private func advanceOneFrame(_ sender: Any?) {
+        guard isPlaybackPaused else { return }
+        HamsterEngineStep(engine, 1000 / 30)
+        displaySimulationFrame()
+        window?.makeFirstResponder(self)
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(advanceOneFrame(_:)) { return isPlaybackPaused }
+        return true
     }
 
     private var canvasRect: NSRect {
@@ -308,6 +418,10 @@ final class HamsterView: NSView {
         // Drawing while visible restarts a stalled loop when the window server
         // omitted occlusion notifications entirely.
         if timer == nil, isAnimationVisible { startAnimation() }
+        if scene3D != nil {
+            update3DLayout()
+            return
+        }
         if let renderer = metalRenderer, NSGraphicsContext.current?.isDrawingToScreen == true {
             updateMetalLayout()
             renderer.night = isDarkMode
@@ -322,6 +436,15 @@ final class HamsterView: NSView {
     /// Metal surfaces cannot be captured with NSView.cacheDisplay. Read back only
     /// for an explicit snapshot; normal animation never transfers pixels to CPU.
     func captureSnapshot() -> NSBitmapImageRep? {
+        if let scene3D {
+            update3DLayout()
+            let image = scene3D.snapshot(size: bounds.size)
+            image.lockFocus()
+            draw3DOverlay(in: bounds)
+            image.unlockFocus()
+            guard let data = image.tiffRepresentation else { return nil }
+            return NSBitmapImageRep(data: data)
+        }
         let backing = window?.backingScaleFactor ?? 2
         let width = Int(ceil(bounds.width * backing)), height = Int(ceil(bounds.height * backing))
         guard width > 0, height > 0, let space = CGColorSpace(name: CGColorSpace.sRGB),
@@ -385,6 +508,7 @@ final class HamsterView: NSView {
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         updateMetalLayout()
+        update3DLayout()
     }
 
     private func updateMetalLayout() {
@@ -423,6 +547,54 @@ final class HamsterView: NSView {
                                              width: focus.width * scale, height: focus.height * scale), transform: nil)
         renderer.night = isDarkMode
         CATransaction.commit()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        if scene3D != nil && playbackControls.frame.contains(local) {
+            return playbackControls.hitTest(local)
+        }
+        if scene3D != nil { return bounds.contains(convert(point, from: superview)) ? self : nil }
+        return super.hitTest(point)
+    }
+
+    private func update3DLayout() {
+        guard let scene3D else { return }
+        scene3D.resize(bounds)
+        let scale = window?.backingScaleFactor ?? 2
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        scene3D.view.layer?.cornerRadius = 12
+        sceneHint.contentsScale = scale
+        sceneHint.frame = .init(x: 4, y: bounds.height - 20, width: bounds.width - 8, height: 16)
+        sceneHint.fontSize = bounds.width < 500 ? 8 : 10
+        sceneHint.string = isPlaybackPaused ? "已暂停 · 可旋转视角 · 空格继续 · → 下一帧" :
+            (bounds.width < 500 ? "拖动旋转 · 滚轮缩放 · 空格暂停" : "拖动旋转 · 滚轮缩放 · ⇧拖动平移 · 0 复位 · 空格暂停")
+        sceneHint.foregroundColor = (isDarkMode ? NSColor.lightGray : NSColor.gray).cgColor
+        let appearanceName: NSAppearance.Name = isDarkMode ? .darkAqua : .aqua
+        if playbackControls.appearance?.name != appearanceName {
+            playbackControls.appearance = NSAppearance(named: appearanceName)
+        }
+        playbackControls.layer?.backgroundColor = (isDarkMode ? NSColor(white: 0.16, alpha: 0.92) : NSColor(white: 0.94, alpha: 0.94)).cgColor
+        playbackPosition.textColor = isDarkMode ? .lightGray : .darkGray
+        watermarkLayer.contentsScale = scale
+        watermarkLayer.frame = .init(x: bounds.width - 115, y: 7, width: 104, height: 22)
+        watermarkLayer.foregroundColor = (isDarkMode ? NSColor.white : NSColor.black).cgColor
+        watermarkLayer.isHidden = !showsWatermark
+        CATransaction.commit()
+    }
+
+    private func draw3DOverlay(in rect: NSRect) {
+        if showsWatermark {
+            let text = "aBowman" as NSString
+            text.draw(at: .init(x: rect.width - 105, y: rect.height - 25), withAttributes: [
+                .font: NSFont.boldSystemFont(ofSize: 16), .foregroundColor: isDarkMode ? NSColor.white : NSColor.black])
+        }
+    }
+
+    private func scenePoint(_ event: NSEvent) -> NSPoint {
+        guard let scene3D else { return .zero }
+        return scene3D.view.convert(event.locationInWindow, from: nil)
     }
 
     private func drawNightLamp(in context: CGContext) {
@@ -486,8 +658,27 @@ final class HamsterView: NSView {
         let darkMode = menu.addItem(withTitle: "深色模式", action: #selector(toggleDarkMode(_:)), keyEquivalent: "")
         darkMode.target = self
         darkMode.state = isDarkMode ? .on : .off
+        menu.addItem(.separator())
+        let playback = menu.addItem(withTitle: isPlaybackPaused ? "继续播放" : "暂停播放", action: #selector(togglePlayback(_:)), keyEquivalent: "")
+        playback.target = self
+        let step = menu.addItem(withTitle: "前进一帧", action: #selector(advanceOneFrame(_:)), keyEquivalent: "")
+        step.target = self
+        step.isEnabled = isPlaybackPaused
+        if scene3D != nil {
+            menu.addItem(.separator())
+            let views = NSMenu(title: "3D 视角")
+            for (i, title) in ["正面（0）", "立体（1）", "右侧（2）", "背面（3）", "俯视（4）", "左侧（5）", "仓鼠特写（6）"].enumerated() {
+                let item = views.addItem(withTitle: title, action: #selector(change3DView(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = i
+            }
+            menu.addItem(withTitle: "3D 视角", action: nil, keyEquivalent: "").submenu = views
+
+        }
         return menu
     }
+
+    @objc private func change3DView(_ sender: NSMenuItem) { scene3D?.preset(sender.tag) }
 
     @objc private func toggleOnTop(_ sender: NSMenuItem) {
         guard let window else { return }
@@ -503,6 +694,8 @@ final class HamsterView: NSView {
     @objc private func toggleDarkMode(_ sender: NSMenuItem) {
         isDarkMode.toggle()
         preferences.set(isDarkMode, forKey: Self.darkModeKey)
+        scene3D?.update(night: isDarkMode)
+        update3DLayout()
         needsDisplay = true
     }
 
@@ -524,6 +717,7 @@ final class HamsterView: NSView {
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         updateMetalLayout()
+        update3DLayout()
         needsDisplay = true
         window?.invalidateCursorRects(for: self)
     }
@@ -551,7 +745,14 @@ final class HamsterView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        if showsWatermark && event.keyCode == 48 {
+        let plain = event.modifierFlags.intersection([.command, .control, .option]).isEmpty
+        if event.keyCode == 49 && plain && !authorFocused {
+            if !event.isARepeat { togglePlayback(nil) }
+        } else if isPlaybackPaused && plain && (event.keyCode == 124 || event.charactersIgnoringModifiers == ".") {
+            advanceOneFrame(nil)
+        } else if let scene3D, let text = event.charactersIgnoringModifiers, let preset = Int(text), (0...6).contains(preset) {
+            scene3D.preset(preset)
+        } else if showsWatermark && event.keyCode == 48 {
             authorFocused.toggle()
             needsDisplay = true
         } else if authorFocused && (event.keyCode == 36 || event.keyCode == 49) {
@@ -561,7 +762,24 @@ final class HamsterView: NSView {
         }
     }
 
+    override func scrollWheel(with event: NSEvent) {
+        guard let scene3D else { super.scrollWheel(with: event); return }
+        scene3D.magnify(-event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 0.008 : 0.06))
+    }
+    override func magnify(with event: NSEvent) { scene3D?.magnify(event.magnification) }
+    override func otherMouseDown(with event: NSEvent) { orbitPrevious = convert(event.locationInWindow, from: nil) }
+    override func otherMouseDragged(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        scene3D?.orbit(dx: p.x - orbitPrevious.x, dy: p.y - orbitPrevious.y)
+        orbitPrevious = p
+    }
+
     override func mouseMoved(with event: NSEvent) {
+        guard !isPlaybackPaused else { return }
+        if let scene3D {
+            if let p = scene3D.stagePoint(scenePoint(event)), isInStage(p) { HamsterEngineMouse(engine, p.x, p.y, 0) }
+            return
+        }
         let canvas = canvasPoint(event)
         let point = canvas
         if isInStage(point) && !(showsWatermark && authorRect.contains(canvas)) { HamsterEngineMouse(engine, point.x, point.y, 0) }
@@ -573,15 +791,32 @@ final class HamsterView: NSView {
         }
         window?.makeFirstResponder(self)
         let location = convert(event.locationInWindow, from: nil)
+        if scene3D != nil && showsWatermark && watermarkLayer.frame.contains(location) {
+            pressedAuthor = true
+            return
+        }
         if windowDragRect.contains(location) || !bounds.insetBy(dx: 6, dy: 6).contains(location) {
             releaseFood()
             window?.performDrag(with: event)
+            return
+        }
+        if let scene3D {
+            pressedAuthor = showsWatermark && watermarkLayer.frame.contains(location)
+            if pressedAuthor { return }
+            orbitStart = location
+            orbitPrevious = location
+            orbitDragged = false
+            if !isPlaybackPaused, event.modifierFlags.contains(.command), let p = scene3D.stagePoint(scenePoint(event)), isInStage(p) {
+                draggingFood = true
+                HamsterEngineMouse(engine, p.x, p.y, 1)
+            }
             return
         }
         let canvas = canvasPoint(event)
         pressedAuthor = showsWatermark && authorRect.contains(canvas)
         authorFocused = false
         if pressedAuthor { return }
+        guard !isPlaybackPaused else { return }
         let point = canvas
         if isInStage(point) {
             draggingFood = true
@@ -591,11 +826,38 @@ final class HamsterView: NSView {
         }
     }
     override func mouseDragged(with event: NSEvent) {
+        if let scene3D {
+            let p = convert(event.locationInWindow, from: nil)
+            if draggingFood {
+                if let stage = scene3D.stagePoint(scenePoint(event)) { HamsterEngineMouse(engine, stage.x, stage.y, 0) }
+            } else if let start = orbitStart {
+                if hypot(p.x - start.x, p.y - start.y) > 3 { orbitDragged = true }
+                if orbitDragged {
+                    if event.modifierFlags.contains(.shift) { scene3D.pan(dx: p.x - orbitPrevious.x, dy: p.y - orbitPrevious.y) }
+                    else { scene3D.orbit(dx: p.x - orbitPrevious.x, dy: p.y - orbitPrevious.y) }
+                }
+            }
+            orbitPrevious = p
+            return
+        }
         guard draggingFood else { return }
         let point = canvasPoint(event)
         HamsterEngineMouse(engine, point.x, point.y, 0)
     }
     override func mouseUp(with event: NSEvent) {
+        if let scene3D {
+            if pressedAuthor && watermarkLayer.frame.contains(convert(event.locationInWindow, from: nil)) { NSWorkspace.shared.open(Self.authorURL) }
+            else if !isPlaybackPaused && orbitStart != nil && !orbitDragged && !draggingFood {
+                if scene3D.hitsWheel(scenePoint(event)) { HamsterEngineMouse(engine, 167, 105, 1); HamsterEngineMouse(engine, 167, 105, 2) }
+                else if let p = scene3D.stagePoint(scenePoint(event)), isInStage(p) {
+                    HamsterEngineMouse(engine, p.x, p.y, 1)
+                    HamsterEngineMouse(engine, p.x, p.y, 2)
+                }
+            }
+            orbitStart = nil
+            releaseFood()
+            return
+        }
         if pressedAuthor && authorRect.contains(canvasPoint(event)) { NSWorkspace.shared.open(Self.authorURL) }
         pressedAuthor = false
         releaseFood()

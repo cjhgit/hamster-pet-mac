@@ -10,6 +10,20 @@ A little hamster for your Mac. Feed it, watch it run on its wheel, and keep it n
 
 Want to try it before installing, or don't have a Mac? **[Play the web version](https://cjhgit.github.io/hamster-html/)** in your browser. Its source is available in the **[hamster-html repository](https://github.com/cjhgit/hamster-html)**.
 
+## 3D branch
+
+This branch uses actual, deformable SceneKit / Metal meshes for the hamster, bottle, running wheel, and night lamp. The hamster retains its beige body, dark contours, cream muzzle, and outlined ears.
+
+Drag to orbit, scroll or pinch to zoom, Shift-drag to pan, click to feed, and Command-drag food. Keys **0–6** select front/reset, three-quarter, right, rear, top, left, and hamster close-up.
+
+Use the bottom-left **Pause / Resume** button or **Space** to freeze playback. While paused, **Next frame**, **→**, or **.** advances exactly 1/30 second. Camera controls remain available; scene clicks do not feed or trigger behavior. `bash scripts/verify-playback.sh` checks playback controls, pose freezing, visibility changes, and resume timing in a real window.
+
+Body and limbs follow the original simulation’s articulated control points, wrist/toe trajectories, and gait phases. A smooth volume union keeps the head and torso connected as they bend; the legs and paws deform and wheel contacts stay inside the running surface.
+
+`bash scripts/verify-hamster-motion.sh` exercises 13 behavior/transition scenarios over 1,560 frames and writes synchronized reference images, orbit views, gait GIFs, silhouette comparisons, and timing data to `/private/tmp/hamster-motion/`.
+
+Run `./run.sh` to build and launch. `bash scripts/verify-3d.sh` validates meshes, camera projection, and input, with screenshots in `/private/tmp/hamster-3d/`.
+
 ## Install
 
 1. Download the **DMG** from [Releases](https://github.com/cjhgit/hamster-pet-mac/releases/latest).

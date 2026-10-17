@@ -108,7 +108,7 @@ import Darwin
             let window = HamsterWindow(preferences: preferences)
             window.setContentSize(HamsterWindow.sizes[2].size)
             let view = HamsterView(frame: NSRect(origin: .zero, size: window.frame.size), seed: 11042,
-                                   preferences: preferences, prefersMetal: metal)
+                                   preferences: preferences, prefersMetal: metal, prefers3D: false)
             precondition(view.usesMetal == metal)
             window.contentView = view
             // Keep the measured window visible when focus returns to the editor.

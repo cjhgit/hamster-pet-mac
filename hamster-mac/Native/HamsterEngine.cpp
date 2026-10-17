@@ -2,6 +2,7 @@
 #include "Properties.hpp"
 #include <CoreText/CoreText.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -83,6 +84,9 @@ struct Engine {
     double time=0;
     std::vector<HamsterVertex> metalVertices;
     std::vector<HamsterDrawCommand> metalCommands;
+    std::vector<HamsterBodyVertex> bodyVertices;
+    std::vector<double> bodySignature;
+    uint32_t bodyGeneration=0;
     explicit Engine(uint32_t s):seed(s) { for(int i=0;i<PropertyCount;i++) keys[propertyNames[i]]=i; }
     double random() { seed=seed*1664525u+1013904223u; return double(seed)/4294967296.0; }
     V allocate(Obj::Kind kind=Obj::Plain) {
@@ -436,3 +440,82 @@ HamsterMetalFrame HamsterEngineBuildMetalFrame(void *engine,int night){
 
 int HamsterEngineGetFrameCount(void *engine){return static_cast<Engine*>(engine)->frames;}
 double HamsterEngineGetElapsedMilliseconds(void *engine){return static_cast<Engine*>(engine)->time;}
+
+HamsterSceneState HamsterEngineGetSceneState(void *engine){
+    E=static_cast<Engine*>(engine); V h=G(E->root,P_ham);
+    auto n=[&](V v,int key,double fallback=0.0){double x=number(G(v,key));return std::isfinite(x)?x:fallback;};
+    return {n(h,P__x),n(h,P__y),n(h,P_ang),n(h,P_standToAng,6.283185307179586),
+        n(h,P_headAng),n(h,P_headAngZ),n(E->root,P_wheelAng),n(h,P_angVel),
+        n(h,P_eyesCloseFrac,1),n(h,P_waterLevel,10),
+        bool(G(h,P_isOnWheel)),bool(G(h,P_sleeping)),bool(G(h,P_eating)),bool(G(h,P_cleaning)),
+        bool(G(h,P_dest)) || (bool(G(h,P_isOnWheel)) && !bool(G(h,P_isTired))),n(h,P__rotation),n(h,P_legVel)};
+}
+
+namespace {
+double rigNumber(V v,int key,double fallback=0){double n=number(G(v,key));return std::isfinite(n)?n:fallback;}
+V rigFeature(V h,int feature){const int keys[]={P_mcEye1,P_mcEye2,P_mcEar1,P_mcEar2};return feature>=0&&feature<4?G(h,keys[feature]):V();}
+}
+HamsterRigPoint HamsterEngineGetRigPoint(void *engine,int index){
+    E=static_cast<Engine*>(engine);V h=G(E->root,P_ham);
+    double a=rigNumber(h,P_ang),co=cos(a),si=sin(a);
+    if(index<4){
+        const int keys[]={P_rearBodyPt,P_frontBodyPt,P_headPos,P_tailPos};
+        if(index<0)return {};
+        V p=G(h,keys[index]);
+        return {rigNumber(p,P_xpos),-rigNumber(p,P_ypos),si*rigNumber(p,P_x)-co*rigNumber(p,P_z),0};
+    }
+    int legIndex=(index-4)/5,part=(index-4)%5;
+    const int legs[]={P_legFR,P_legFL,P_legRR,P_legRL};
+    if(legIndex>3)return {};
+    V leg=G(h,legs[legIndex]);
+    if(part<3){
+        const int keys[]={P_frontPt,P_sidePt,P_rearPt};V p=G(leg,keys[part]);
+        return {rigNumber(p,P_xpos),-rigNumber(p,P_ypos),si*rigNumber(p,P_x)-co*rigNumber(p,P_z),0};
+    }
+    V base=G(leg,P_base),foot=G(leg,P_ftPos),p=part==3?G(leg,P_jtPos):foot;
+    double forward=rigNumber(base,P_x)+rigNumber(leg,P_legLen)*cos(rigNumber(leg,P_legAng));
+    double lateral=rigNumber(base,P_z)+rigNumber(foot,P_z);
+    double footAngle=-M_PI-rigNumber(leg,P_maxFtAng)*std::min(0.0,rigNumber(foot,P_x))/rigNumber(leg,P_maxStepDist,20);
+    if(bool(G(h,P_isOnWheel))){
+        double phase=rigNumber(h,P_angVel)+rigNumber(leg,P_angOffset);
+        double fraction=rigNumber(h,P_legVel)/rigNumber(h,P_maxLegVel,.9);
+        double stride=rigNumber(h,P_maxStepDist,20)*(legIndex<2?.2:.4)+rigNumber(h,P_maxStepDist,20)*.8*fraction;
+        forward+=cos(phase)*stride;
+        footAngle=-M_PI-rigNumber(leg,P_maxFtAng)*std::min(0.0,cos(phase))*(stride/rigNumber(leg,P_maxStepDist,20));
+        lateral=rigNumber(base,P_z);
+    }else{ forward+=rigNumber(foot,P_x); }
+    if(part==3)forward+=rigNumber(leg,P_ftLen)*cos(footAngle);
+    return {rigNumber(p,P_xpos),-rigNumber(p,P_ypos)+rigNumber(leg,P_currStepHt),si*forward-co*lateral,0};
+}
+int HamsterEngineGetRigFeatureCount(void *engine,int feature){
+    E=static_cast<Engine*>(engine);V p=G(rigFeature(G(E->root,P_ham),feature),P_opoints);
+    return p.o?int(rigNumber(p,P_length)):0;
+}
+HamsterRigPoint HamsterEngineGetRigFeaturePoint(void *engine,int feature,int index){
+    E=static_cast<Engine*>(engine);V h=G(E->root,P_ham),clip=rigFeature(h,feature),points=G(clip,P_opoints);
+    if(!points.o||index<0||index>=int(rigNumber(points,P_length)))return {};
+    V p=indexGet(points,V(index));bool eye=feature<2;
+    V center=G(h,eye?P_eyePt:P_earPt);
+    double side=(feature%2==0?1:-1),gap=rigNumber(h,eye?P_eyeGap:P_earGap);
+    double a=rigNumber(h,P_ang)+rigNumber(h,P_headAng),co=cos(a),si=sin(a);
+    double x=rigNumber(p,P_x)+rigNumber(center,P_x),y=rigNumber(p,P_y),z=rigNumber(p,P_z)+side*gap;
+    if(eye)y*=std::clamp(rigNumber(h,P_eyesCloseFrac,1),.03,1.0);
+    y+=rigNumber(center,P_y);
+    HamsterRigPoint head=HamsterEngineGetRigPoint(engine,2);
+    return {head.x+co*x+si*z,head.y-y,head.z+si*x-co*z,bool(G(p,P_curve))};
+}
+uint32_t HamsterEngineGetSceneColor(void *engine,const char *name){
+    E=static_cast<Engine*>(engine);double c=number(G(E->root,E->key(name)));
+    return std::isfinite(c)?uint32_t(c):0;
+}
+int HamsterEngineGetSceneFoodCount(void *engine){
+    E=static_cast<Engine*>(engine);return int(number(G(G(E->root,P_freshFood),P_length)));
+}
+HamsterSceneFood HamsterEngineGetSceneFood(void *engine,int index){
+    E=static_cast<Engine*>(engine);V foods=G(E->root,P_freshFood);
+    if(index<0 || index>=int(number(G(foods,P_length))))return {};
+    V f=indexGet(foods,V(index));V p=G(f,P_pos);
+    return {number(G(p,P_x)),number(G(p,P_y)),number(G(f,P_radius)),bool(G(f,P__visible))};
+}
+
+#include "HamsterBodyMesh.hpp"
