@@ -93,5 +93,33 @@ import CoreText
         let visibleView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!)
         precondition(HamsterTestWatermarkVisible() == 1 && visibleView.menu(for: contextEvent)!.item(at: 2)!.state == .on)
         print("PASS: watermark visibility toggles in engine and persists when hidden or shown")
+        func capture(_ target: HamsterView) -> NSBitmapImageRep {
+            let bitmap = target.bitmapImageRepForCachingDisplay(in: target.bounds)!
+            target.cacheDisplay(in: target.bounds, to: bitmap)
+            return bitmap
+        }
+        let daylight = capture(view)
+        precondition(contextMenu().item(at: 3)!.state == .off)
+        contextMenu().performActionForItem(at: 3)
+        let night = capture(view)
+        try night.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "/private/tmp/hamster-native-night.png"))
+        func brightness(_ x: CGFloat, _ y: CGFloat) -> CGFloat {
+            let color = night.colorAt(x: Int((x + 1) / 282 * CGFloat(night.pixelsWide)),
+                                      y: Int((y + 1) / 212 * CGFloat(night.pixelsHigh)))!.usingColorSpace(.sRGB)!
+            return (color.redComponent + color.greenComponent + color.blueComponent) / 3
+        }
+        precondition(brightness(257, 49) > brightness(72, 178) * 1.15)
+        precondition(brightness(72, 178) > 0.18 && brightness(72, 178) < 0.35 && brightness(257, 49) < 0.65)
+        precondition(abs(brightness(220, 49) - brightness(72, 178)) < 0.03)
+        precondition(brightness(25, 60) > brightness(72, 178) && brightness(25, 60) < 0.65)
+        let nightView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!)
+        precondition(nightView.menu(for: contextEvent)!.item(at: 3)!.state == .on)
+        nightView.setFrameSize(HamsterWindow.sizes[0].size)
+        try capture(nightView).representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "/private/tmp/hamster-native-night-small.png"))
+        contextMenu().performActionForItem(at: 3)
+        precondition(capture(view).representation(using: .png, properties: [:]) == daylight.representation(using: .png, properties: [:]))
+        let dayView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!)
+        precondition(dayView.menu(for: contextEvent)!.item(at: 3)!.state == .off)
+        print("PASS: night lighting falls off with distance, day/night restore exactly, and theme preferences persist")
     }
 }

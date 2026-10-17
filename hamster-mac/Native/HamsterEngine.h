@@ -13,6 +13,7 @@ void HamsterEngineSetWatermarkVisible(void *engine, int visible);
 void HamsterEngineStep(void *engine, double elapsedMilliseconds);
 void HamsterEngineMouse(void *engine, double x, double y, int action);
 void HamsterEngineDraw(void *engine, CGContextRef context);
+void HamsterEngineDrawWithTheme(void *engine, CGContextRef context, int night);
 #ifdef __cplusplus
 }
 #endif

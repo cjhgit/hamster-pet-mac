@@ -57,6 +57,7 @@ struct Obj {
     std::unique_ptr<Graphics> graphics;
     bool marked=false;
     CTLineRef textLine=nullptr;
+    bool textNight=false;
     double textAscent=0;
     ~Obj(){if(textLine)CFRelease(textLine);}
 };
@@ -273,7 +274,7 @@ void setColor(CGContextRef ctx,uint32_t c,double alpha,bool stroke=false){
     CGFloat rgba[]={CGFloat(r),CGFloat(g),CGFloat(b),CGFloat(alpha)};
     if(stroke)CGContextSetStrokeColor(ctx,rgba);else CGContextSetFillColor(ctx,rgba);
 }
-void drawClip(V v,CGContextRef ctx,double alpha=1){
+void drawClip(V v,CGContextRef ctx,double alpha=1,bool night=false){
     if(!v.o||!bool(G(v,P__visible))||bool(G(v,P_isMask))||bool(G(v,P__removed)))return;
     CGContextSaveGState(ctx);
     CGContextTranslateCTM(ctx,number(G(v,P__x)),number(G(v,P__y)));
@@ -287,21 +288,29 @@ void drawClip(V v,CGContextRef ctx,double alpha=1){
         CGContextAddPath(ctx,p);CGContextClip(ctx);CGPathRelease(p);
     }
     if(v.o->graphics){
-        for(auto& s:v.o->graphics->fills){setColor(ctx,s->color,s->alpha*alpha);CGContextAddPath(ctx,s->path);CGContextEOFillPath(ctx);}
+        const bool background= v.o==G(E->root,P_bg).o || v.o==G(E->root,P_wheel).o;
+        const bool water= v.o==G(G(E->root,P_water),P_mcWater).o;
+        for(auto& s:v.o->graphics->fills){
+            uint32_t color=night&&background?0x354252:s->color;
+            if(night&&water)color=(((color>>16&255)*3/5)<<16)|(((color>>8&255)*3/5)<<8)|((color&255)*3/5);
+            setColor(ctx,color,s->alpha*alpha);CGContextAddPath(ctx,s->path);CGContextEOFillPath(ctx);
+        }
         CGContextSetLineCap(ctx,kCGLineCapRound);CGContextSetLineJoin(ctx,kCGLineJoinRound);
-        for(auto& s:v.o->graphics->strokes){setColor(ctx,s->color,s->alpha*alpha,true);CGContextSetLineWidth(ctx,s->width);CGContextAddPath(ctx,s->path);CGContextStrokePath(ctx);}
+        for(auto& s:v.o->graphics->strokes){setColor(ctx,night&&v.o==G(E->root,P_bg).o?0x8291A4:s->color,s->alpha*alpha,true);CGContextSetLineWidth(ctx,s->width);CGContextAddPath(ctx,s->path);CGContextStrokePath(ctx);}
     }
     V format=G(v,P_format);
     if(format.o){
+      if(v.o->textLine && v.o->textNight!=night){CFRelease(v.o->textLine);v.o->textLine=nullptr;}
       if(!v.o->textLine){
         CTFontRef font=CTFontCreateWithName(CFSTR("Icicle Country 2"),number(G(format,P_size)),nullptr);
         std::string content=text(G(v,P_text));CFStringRef str=CFStringCreateWithCString(nullptr,content.c_str(),kCFStringEncodingUTF8);
-        uint32_t c=uint32_t(number(G(format,P_color)));CGFloat rgba[]={CGFloat(c>>16&255)/255,CGFloat(c>>8&255)/255,CGFloat(c&255)/255,CGFloat(alpha)};
+        uint32_t c=night?0xB4BCC6:uint32_t(number(G(format,P_color)));CGFloat rgba[]={CGFloat(c>>16&255)/255,CGFloat(c>>8&255)/255,CGFloat(c&255)/255,CGFloat(alpha)};
         CGColorSpaceRef space=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);CGColorRef color=CGColorCreate(space,rgba);
         const void* keys[]={kCTFontAttributeName,kCTForegroundColorAttributeName};const void* vals[]={font,color};
         CFDictionaryRef attrs=CFDictionaryCreate(nullptr,keys,vals,2,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
         CFAttributedStringRef attr=CFAttributedStringCreate(nullptr,str,attrs);CTLineRef line=CTLineCreateWithAttributedString(attr);
         v.o->textLine=line;
+        v.o->textNight=night;
         // Match the reference Canvas top baseline for the embedded author font.
         // Core Text's typographic ascent places this particular font too low.
         v.o->textAscent=9.25*number(G(format,P_size))/14;
@@ -312,7 +321,7 @@ void drawClip(V v,CGContextRef ctx,double alpha=1){
     // Original depth swaps determine which ears, feet, and face parts occlude others.
     auto children=v.o->children;
     std::stable_sort(children.begin(),children.end(),[](V a,V b){return number(G(a,P__depth))<number(G(b,P__depth));});
-    for(auto child:children)drawClip(child,ctx,alpha);
+    for(auto child:children)drawClip(child,ctx,alpha,night);
     CGContextRestoreGState(ctx);
 }
 } // namespace
@@ -325,10 +334,13 @@ void HamsterEngineSetWatermarkVisible(void *engine,int visible){E=static_cast<En
 void HamsterEngineStep(void *engine,double elapsed){E=static_cast<Engine*>(engine);advance(std::max(0.0,elapsed));call(E->root,P_onEnterFrame,{});call(G(E->root,P_ham),P_onEnterFrame,{});if(++E->frames%30==0)E->collect();}
 void HamsterEngineMouse(void *engine,double x,double y,int action){E=static_cast<Engine*>(engine);if(action!=2){R(E->root,P__xmouse)=V(x);R(E->root,P__ymouse)=V(y);}if(action==0)call(E->root,P_onMouseMove,{});if(action==1){call(E->root,P_onMouseMove,{});call(E->root,P_onMouseDown,{});}if(action==2)call(E->root,P_onMouseUp,{});}
 void HamsterEngineDraw(void *engine,CGContextRef ctx){
+    HamsterEngineDrawWithTheme(engine,ctx,0);
+}
+void HamsterEngineDrawWithTheme(void *engine,CGContextRef ctx,int night){
     E=static_cast<Engine*>(engine);
     CGContextSaveGState(ctx);
     CGColorSpaceRef space=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     CGContextSetFillColorSpace(ctx,space);CGContextSetStrokeColorSpace(ctx,space);CGColorSpaceRelease(space);
-    drawClip(E->root,ctx);
+    drawClip(E->root,ctx,1,night!=0);
     CGContextRestoreGState(ctx);
 }

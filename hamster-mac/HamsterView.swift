@@ -65,6 +65,8 @@ final class HamsterView: NSView {
     private let preferences: UserDefaults
     private static let watermarkKey = "hamster.showsWatermark"
     private var showsWatermark = true
+    private static let darkModeKey = "hamster.darkMode"
+    private var isDarkMode = false
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
     private var previousTime = ProcessInfo.processInfo.systemUptime
@@ -76,6 +78,10 @@ final class HamsterView: NSView {
     private var mouseTracking: NSTrackingArea?
     private static let background = NSColor.white
     private static let authorURL = URL(string: "http://abowman.com/google-modules/hamster")!
+    private static let lampGlow = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: [
+        NSColor(srgbRed: 1, green: 0.70, blue: 0.35, alpha: 0.55).cgColor,
+        NSColor(srgbRed: 1, green: 0.70, blue: 0.35, alpha: 0).cgColor
+    ] as CFArray, locations: [0, 1])!
 
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
@@ -102,6 +108,7 @@ final class HamsterView: NSView {
         setAccessibilityRole(.group)
         setAccessibilityLabel("宠物仓鼠")
         showsWatermark = preferences.object(forKey: Self.watermarkKey) as? Bool ?? true
+        isDarkMode = preferences.bool(forKey: Self.darkModeKey)
         updateWatermark()
         setAccessibilityHelp("点击空白处投食，按住拖动或抛出食物；点击黄色轮心让仓鼠上跑轮。移动鼠标可唤醒仓鼠。")
     }
@@ -232,7 +239,19 @@ final class HamsterView: NSView {
         bounds.fill()
         context.translateBy(x: rect.minX + scale, y: rect.minY + scale)
         context.scaleBy(x: scale, y: scale)
-        HamsterEngineDraw(engine, context)
+        HamsterEngineDrawWithTheme(engine, context, isDarkMode ? 1 : 0)
+        if isDarkMode {
+            context.saveGState()
+            context.setBlendMode(.multiply)
+            let light = CGPoint(x: 259, y: 40)
+            context.setFillColor(NSColor(srgbRed: 0.90, green: 0.92, blue: 0.96, alpha: 1).cgColor)
+            context.fill(CGRect(x: -1, y: -1, width: 282, height: 212))
+            context.setBlendMode(.screen)
+            context.drawRadialGradient(Self.lampGlow, startCenter: light, startRadius: 0,
+                                       endCenter: light, endRadius: 32, options: [])
+            context.restoreGState()
+            drawNightLamp(in: context)
+        }
         context.restoreGState()
         if authorFocused && window?.firstResponder === self {
             let focus = authorRect.insetBy(dx: -2, dy: -2)
@@ -245,6 +264,33 @@ final class HamsterView: NSView {
             context.restoreGState()
         }
 
+    }
+
+    private func drawNightLamp(in context: CGContext) {
+        context.saveGState()
+        // A small pendant stays below the author credit and moves with the scene.
+        context.setStrokeColor(NSColor(srgbRed: 0.42, green: 0.37, blue: 0.29, alpha: 1).cgColor)
+        context.setLineWidth(1)
+        context.move(to: CGPoint(x: 259, y: 1))
+        context.addLine(to: CGPoint(x: 259, y: 28))
+        context.strokePath()
+        context.setShadow(offset: .zero, blur: 8,
+                          color: NSColor(srgbRed: 1, green: 0.65, blue: 0.22, alpha: 0.85).cgColor)
+        context.setFillColor(NSColor(srgbRed: 1, green: 0.86, blue: 0.56, alpha: 1).cgColor)
+        context.fillEllipse(in: CGRect(x: 255, y: 35, width: 8, height: 5))
+        context.setShadow(offset: .zero, blur: 0, color: nil)
+        let shade = CGMutablePath()
+        shade.move(to: CGPoint(x: 254, y: 28))
+        shade.addLine(to: CGPoint(x: 264, y: 28))
+        shade.addLine(to: CGPoint(x: 270, y: 36))
+        shade.addQuadCurve(to: CGPoint(x: 248, y: 36), control: CGPoint(x: 259, y: 39))
+        shade.closeSubpath()
+        context.addPath(shade)
+        context.setFillColor(NSColor(srgbRed: 0.35, green: 0.30, blue: 0.23, alpha: 1).cgColor)
+        context.setStrokeColor(NSColor(srgbRed: 0.71, green: 0.55, blue: 0.32, alpha: 1).cgColor)
+        context.setLineWidth(0.8)
+        context.drawPath(using: .fillStroke)
+        context.restoreGState()
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -270,6 +316,9 @@ final class HamsterView: NSView {
         let watermark = menu.addItem(withTitle: "显示水印", action: #selector(toggleWatermark(_:)), keyEquivalent: "")
         watermark.target = self
         watermark.state = showsWatermark ? .on : .off
+        let darkMode = menu.addItem(withTitle: "深色模式", action: #selector(toggleDarkMode(_:)), keyEquivalent: "")
+        darkMode.target = self
+        darkMode.state = isDarkMode ? .on : .off
         menu.addItem(.separator())
         let close = menu.addItem(withTitle: "关闭窗口", action: #selector(closeWindow(_:)), keyEquivalent: "")
         close.target = self
@@ -285,6 +334,12 @@ final class HamsterView: NSView {
         showsWatermark.toggle()
         preferences.set(showsWatermark, forKey: Self.watermarkKey)
         updateWatermark()
+    }
+
+    @objc private func toggleDarkMode(_ sender: NSMenuItem) {
+        isDarkMode.toggle()
+        preferences.set(isDarkMode, forKey: Self.darkModeKey)
+        needsDisplay = true
     }
 
     @objc private func changeWindowSize(_ sender: NSMenuItem) {
