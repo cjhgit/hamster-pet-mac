@@ -2,6 +2,55 @@ import AppKit
 import CoreText
 import SwiftUI
 
+final class HamsterWindow: NSWindow, NSWindowDelegate {
+    private static let settingsKey = "hamster.window"
+    private let preferences: UserDefaults
+    private var savesSettings = false
+
+    static let sizes: [(name: String, size: NSSize)] = [
+        ("小（50%）", NSSize(width: 371, height: 275)),
+        ("中（75%）", NSSize(width: 556.5, height: 412.5)),
+        ("大（100%）", NSSize(width: 742, height: 550))
+    ]
+
+    init(preferences: UserDefaults = .standard) {
+        self.preferences = preferences
+        let settings = preferences.dictionary(forKey: Self.settingsKey) ?? [:]
+        var size = Self.sizes[2].size
+        if let width = settings["width"] as? Double, let height = settings["height"] as? Double,
+           width.isFinite, height.isFinite, width >= 320, height >= 320 * 550 / 742,
+           abs(width / height - 742 / 550) < 0.01 {
+            size = NSSize(width: width, height: height)
+        }
+        super.init(contentRect: NSRect(origin: .zero, size: size),
+                   styleMask: [.borderless, .resizable, .miniaturizable, .closable],
+                   backing: .buffered, defer: false)
+        title = "Canvas 仓鼠"
+        minSize = NSSize(width: 320, height: 320 * 550 / 742)
+        contentAspectRatio = NSSize(width: 742, height: 550)
+        isReleasedWhenClosed = false
+        isMovableByWindowBackground = false
+        level = settings["pinned"] as? Bool == true ? .floating : .normal
+        delegate = self
+        savesSettings = true
+    }
+
+    override var level: NSWindow.Level {
+        didSet { saveSettings() }
+    }
+
+    func windowDidResize(_ notification: Notification) { saveSettings() }
+
+    private func saveSettings() {
+        guard savesSettings else { return }
+        preferences.set(["width": frame.width, "height": frame.height, "pinned": level == .floating],
+                        forKey: Self.settingsKey)
+    }
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 struct HamsterCanvas: NSViewRepresentable {
     func makeNSView(context: Context) -> HamsterView { HamsterView() }
     func updateNSView(_ nsView: HamsterView, context: Context) {}
@@ -130,10 +179,9 @@ final class HamsterView: NSView {
     }
 
     private var canvasRect: NSRect {
-        let width = min(bounds.width, 742)
+        let width = min(bounds.width, bounds.height * 742 / 550)
         let height = width * 550 / 742
-        let totalHeight = height + 54.4
-        return NSRect(x: (bounds.width - width) / 2, y: max(0, (bounds.height - totalHeight) / 2), width: width, height: height)
+        return NSRect(x: (bounds.width - width) / 2, y: (bounds.height - height) / 2, width: width, height: height)
     }
 
     private func canvasPoint(_ event: NSEvent) -> NSPoint {
@@ -189,14 +237,53 @@ final class HamsterView: NSView {
             context.restoreGState()
         }
 
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
-        paragraph.minimumLineHeight = 22.4
-        paragraph.maximumLineHeight = 22.4
-        let hint = "点击上方画面中的空白处，给仓鼠投喂食物" as NSString
-        hint.draw(in: NSRect(x: rect.minX + 16, y: rect.maxY + 8, width: max(0, rect.width - 32), height: 44.8),
-                  withAttributes: [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor(srgbRed: 197 / 255, green: 197 / 255, blue: 197 / 255, alpha: 1), .paragraphStyle: paragraph])
     }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        releaseFood()
+        let menu = NSMenu()
+        let pinned = window?.level == .floating
+        let pin = menu.addItem(withTitle: pinned ? "取消置顶" : "置顶", action: #selector(toggleOnTop(_:)), keyEquivalent: "")
+        pin.target = self
+        pin.state = pinned ? .on : .off
+
+        let sizeMenu = NSMenu(title: "窗口大小")
+        for (index, preset) in HamsterWindow.sizes.enumerated() {
+            let item = sizeMenu.addItem(withTitle: preset.name,
+                                        action: #selector(changeWindowSize(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            if let size = window?.contentLayoutRect.size,
+               abs(size.width - preset.size.width) < 1, abs(size.height - preset.size.height) < 1 {
+                item.state = .on
+            }
+        }
+        menu.addItem(withTitle: "窗口大小", action: nil, keyEquivalent: "").submenu = sizeMenu
+        menu.addItem(.separator())
+        let close = menu.addItem(withTitle: "关闭窗口", action: #selector(closeWindow(_:)), keyEquivalent: "")
+        close.target = self
+        return menu
+    }
+
+    @objc private func toggleOnTop(_ sender: NSMenuItem) {
+        guard let window else { return }
+        window.level = window.level == .floating ? .normal : .floating
+    }
+
+    @objc private func changeWindowSize(_ sender: NSMenuItem) {
+        guard let window, HamsterWindow.sizes.indices.contains(sender.tag) else { return }
+        let size = HamsterWindow.sizes[sender.tag].size
+        var frame = NSRect(x: window.frame.minX, y: window.frame.maxY - size.height,
+                           width: size.width, height: size.height)
+        if let screen = window.screen {
+            let visible = screen.visibleFrame
+            frame.origin.x = max(visible.minX, min(frame.minX, visible.maxX - frame.width))
+            frame.origin.y = max(visible.minY, min(frame.minY, visible.maxY - frame.height))
+        }
+        window.setFrame(frame, display: true)
+    }
+
+    @objc private func closeWindow(_ sender: NSMenuItem) { window?.close() }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
@@ -238,6 +325,10 @@ final class HamsterView: NSView {
         if isInStage(point) && !authorRect.contains(canvas) { HamsterEngineMouse(engine, point.x, point.y, 0) }
     }
     override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) {
+            if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
+            return
+        }
         window?.makeFirstResponder(self)
         let canvas = canvasPoint(event)
         pressedAuthor = authorRect.contains(canvas)
@@ -247,6 +338,8 @@ final class HamsterView: NSView {
         if isInStage(point) {
             draggingFood = true
             HamsterEngineMouse(engine, point.x, point.y, 1)
+        } else {
+            window?.performDrag(with: event)
         }
     }
     override func mouseDragged(with event: NSEvent) {

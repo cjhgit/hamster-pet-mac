@@ -8,9 +8,44 @@ import CoreText
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let font = root.appendingPathComponent("hamster-mac/Resources/1_Icicle Country 2.ttf")
         CTFontManagerRegisterFontsForURL(font as CFURL, .process, nil)
-        let view = HamsterView(frame: NSRect(x: 0, y: 0, width: 742, height: 605), seed: 11042)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        let view = HamsterView(frame: NSRect(x: 0, y: 0, width: 742, height: 550), seed: 11042)
+        let suiteName = "hamster.snapshot.\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suiteName)!
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        let window = HamsterWindow(preferences: preferences)
         window.contentView = view
+        precondition(!window.styleMask.contains(.titled) && window.canBecomeKey && window.canBecomeMain)
+        let contextEvent = NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [],
+            timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            eventNumber: 0, clickCount: 1, pressure: 1)!
+        func contextMenu() -> NSMenu { view.menu(for: contextEvent)! }
+        let initialFood = HamsterTestFoodCount()
+        let menu = contextMenu()
+        precondition(menu.item(at: 0)!.title == "置顶")
+        menu.performActionForItem(at: 0)
+        precondition(window.level == .floating)
+        let pinnedMenu = contextMenu()
+        precondition(pinnedMenu.item(at: 0)!.title == "取消置顶" && pinnedMenu.item(at: 0)!.state == .on)
+        pinnedMenu.performActionForItem(at: 0)
+        precondition(window.level == .normal && HamsterTestFoodCount() == initialFood)
+        for index in HamsterWindow.sizes.indices {
+            let sizes = contextMenu().item(at: 1)!.submenu!
+            sizes.performActionForItem(at: index)
+            let expected = HamsterWindow.sizes[index].size
+            precondition(abs(window.frame.width - expected.width) < 1 && abs(window.frame.height - expected.height) < 1)
+            precondition(contextMenu().item(at: 1)!.submenu!.item(at: index)!.state == .on)
+            let restored = HamsterWindow(preferences: UserDefaults(suiteName: suiteName)!)
+            precondition(restored.frame.size == window.frame.size && restored.level == .normal)
+        }
+        print("PASS: borderless focus, context menu pin/unpin, all size presets and menu selection states")
+        window.setContentSize(NSSize(width: 600, height: 600 * 550 / 742))
+        contextMenu().performActionForItem(at: 0)
+        let restored = HamsterWindow(preferences: UserDefaults(suiteName: suiteName)!)
+        precondition(restored.frame.size == window.frame.size && restored.level == .floating)
+        contextMenu().performActionForItem(at: 0)
+        precondition(HamsterWindow(preferences: preferences).level == .normal)
+        window.setContentSize(HamsterWindow.sizes[2].size)
+        print("PASS: persisted preset/custom window sizes and pin/unpin restore in new windows")
         // Offscreen AppKit capture exercises the actual shipping view and layout.
         guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { fatalError("No bitmap") }
         view.cacheDisplay(in: view.bounds, to: bitmap)
@@ -29,9 +64,9 @@ import CoreText
         }
         // Exercise the actual NSView event handlers at two window scales.
         for width: CGFloat in [742, 375] {
-            view.setFrameSize(NSSize(width: width, height: 605))
+            view.setFrameSize(NSSize(width: width, height: 550))
             let scale = width / 742
-            let top = (605 - (550 * scale + 54.4)) / 2
+            let top = (550 - 550 * scale) / 2
             let initial = HamsterTestFoodCount()
             view.mouseDown(with: mouse(.leftMouseDown, NSPoint(x: 500 * scale, y: top + 200 * scale)))
             precondition(HamsterTestFoodCount() == initial + 1 && HamsterTestDragging() == 1)
