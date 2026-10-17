@@ -23,7 +23,7 @@ xcodebuild -quiet -project hamster-mac.xcodeproj -scheme hamster-mac \
     CODE_SIGN_IDENTITY=- build
 
 codesign --verify --deep --strict "$RELEASE_APP"
-lipo -verify_arch arm64 x86_64 "$RELEASE_APP/Contents/MacOS/Hamster Pet"
+lipo "$RELEASE_APP/Contents/MacOS/Hamster Pet" -verify_arch arm64 x86_64
 /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$RELEASE_APP/Contents/Info.plist" | grep -qx true
 test -f "$RELEASE_APP/Contents/Resources/AppIcon.icns"
 
