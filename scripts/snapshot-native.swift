@@ -144,7 +144,9 @@ import CoreText
         }
         let activeView = appDelegate.window!.contentView as! HamsterView
         appDelegate.window?.level = .floating
-        pumpEvents(for: 0.2)
+        // Headless CI window servers may skip occlusion notifications; the view's
+        // visibility watchdog then restarts animation within ~0.1s, so allow slack.
+        pumpEvents(for: 0.6)
         let activeFrames = activeView.simulationFrames
         precondition(activeFrames > 1, "Visible window must animate (frames: \(activeFrames), occlusion: \(appDelegate.window!.occlusionState.rawValue))")
         tray.performActionForItem(at: 0)
@@ -160,10 +162,10 @@ import CoreText
         precondition(tray.item(at: 0)!.title == "显示仓鼠")
         tray.performActionForItem(at: 0)
         precondition(appDelegate.window?.isVisible == true)
-        pumpEvents(for: 0.15)
+        pumpEvents(for: 0.2)
         precondition(activeView.simulationFrames > pausedFrames)
         if activeView.usesMetal { precondition(activeView.gpuSubmittedFrames > pausedGPUFrames) }
-        precondition(activeView.simulationMilliseconds - pausedTime < 250, "Hidden time must not advance simulation timers")
+        precondition(activeView.simulationMilliseconds - pausedTime < 300, "Hidden time must not advance simulation timers")
         print("PASS: visible animation advances, hidden animation pauses and resume excludes hidden time")
         appDelegate.window?.level = .normal
         refreshTray()

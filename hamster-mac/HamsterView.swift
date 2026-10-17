@@ -70,6 +70,7 @@ final class HamsterView: NSView {
     private static let darkModeKey = "hamster.darkMode"
     private var isDarkMode = false
     private var timer: Timer?
+    private var visibilityWatchdog: Timer?
     private var metalRenderer: HamsterMetalRenderer?
     private let lampLayer = CALayer()
     private let focusLayer = CAShapeLayer()
@@ -147,6 +148,7 @@ final class HamsterView: NSView {
 
     deinit {
         timer?.invalidate()
+        visibilityWatchdog?.invalidate()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         HamsterEngineDestroy(engine)
     }
@@ -169,6 +171,8 @@ final class HamsterView: NSView {
         super.viewDidMoveToWindow()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
+        visibilityWatchdog?.invalidate()
+        visibilityWatchdog = nil
         if let window {
             window.acceptsMouseMovedEvents = true
             for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification,
@@ -187,29 +191,67 @@ final class HamsterView: NSView {
         updateActivity()
     }
 
+    /// Headless window servers (CI runners) may never deliver occlusion
+    /// notifications, so visibility is also re-checked on every tick and by a
+    /// low-frequency watchdog that survives while the animation is suspended.
+    private var isAnimationVisible: Bool {
+        window?.isVisible == true && window?.occlusionState.contains(.visible) == true &&
+            window?.isMiniaturized == false && !NSApp.isHidden
+    }
+
     private func updateActivity() {
         if window?.isKeyWindow != true { releaseFood() }
-        let visible = window?.occlusionState.contains(.visible) == true && window?.isMiniaturized == false && !NSApp.isHidden
-        if visible && timer == nil {
-            previousTime = ProcessInfo.processInfo.systemUptime
-            accumulator = 0
-            pendingTimerMilliseconds = 0
-            let timer = Timer(timeInterval: 1 / 30, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.tick() }
-            }
-            timer.tolerance = 1 / 300
-            self.timer = timer
-            RunLoop.main.add(timer, forMode: .common)
-            needsDisplay = true
-        } else if !visible {
-            timer?.invalidate()
-            timer = nil
-            HamsterEnginePurgeRenderCache(engine)
-            metalRenderer?.releaseDrawables()
+        refreshActivity()
+    }
+
+    private func refreshActivity() {
+        if isAnimationVisible {
+            startAnimation()
+        } else {
+            suspendAnimation()
         }
     }
 
+    private func startAnimation() {
+        visibilityWatchdog?.invalidate()
+        visibilityWatchdog = nil
+        guard timer == nil else { return }
+        previousTime = ProcessInfo.processInfo.systemUptime
+        accumulator = 0
+        pendingTimerMilliseconds = 0
+        let timer = Timer(timeInterval: 1 / 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+        timer.tolerance = 1 / 300
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        needsDisplay = true
+    }
+
+    private func suspendAnimation() {
+        if timer != nil {
+            timer?.invalidate()
+            timer = nil
+            previousTime = ProcessInfo.processInfo.systemUptime
+            accumulator = 0
+            pendingTimerMilliseconds = 0
+            HamsterEnginePurgeRenderCache(engine)
+            metalRenderer?.releaseDrawables()
+        }
+        guard window != nil, visibilityWatchdog == nil else { return }
+        let watchdog = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshActivity() }
+        }
+        watchdog.tolerance = 0.025
+        visibilityWatchdog = watchdog
+        RunLoop.main.add(watchdog, forMode: .common)
+    }
+
     private func tick() {
+        guard isAnimationVisible else {
+            suspendAnimation()
+            return
+        }
         let now = ProcessInfo.processInfo.systemUptime
         let elapsed = max(0, now - previousTime)
         previousTime = now
@@ -263,6 +305,9 @@ final class HamsterView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        // Drawing while visible restarts a stalled loop when the window server
+        // omitted occlusion notifications entirely.
+        if timer == nil, isAnimationVisible { startAnimation() }
         if let renderer = metalRenderer, NSGraphicsContext.current?.isDrawingToScreen == true {
             updateMetalLayout()
             renderer.night = isDarkMode
