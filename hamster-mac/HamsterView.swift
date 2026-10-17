@@ -295,6 +295,14 @@ final class HamsterView: NSView {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         releaseFood()
+        let menu = makeSettingsMenu()
+        menu.addItem(.separator())
+        let close = menu.addItem(withTitle: "关闭窗口", action: #selector(closeWindow(_:)), keyEquivalent: "")
+        close.target = self
+        return menu
+    }
+
+    func makeSettingsMenu() -> NSMenu {
         let menu = NSMenu()
         let pinned = window?.level == .floating
         let pin = menu.addItem(withTitle: pinned ? "取消置顶" : "置顶", action: #selector(toggleOnTop(_:)), keyEquivalent: "")
@@ -319,9 +327,6 @@ final class HamsterView: NSView {
         let darkMode = menu.addItem(withTitle: "深色模式", action: #selector(toggleDarkMode(_:)), keyEquivalent: "")
         darkMode.target = self
         darkMode.state = isDarkMode ? .on : .off
-        menu.addItem(.separator())
-        let close = menu.addItem(withTitle: "关闭窗口", action: #selector(closeWindow(_:)), keyEquivalent: "")
-        close.target = self
         return menu
     }
 

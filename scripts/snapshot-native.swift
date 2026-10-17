@@ -121,5 +121,36 @@ import CoreText
         let dayView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!)
         precondition(dayView.menu(for: contextEvent)!.item(at: 3)!.state == .off)
         print("PASS: night lighting falls off with distance, day/night restore exactly, and theme preferences persist")
+        let appDelegate = AppDelegate(preferences: preferences)
+        appDelegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        defer {
+            appDelegate.window?.close()
+            appDelegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        }
+        precondition(NSApp.activationPolicy() == .accessory)
+        let tray = appDelegate.statusItem!.menu!
+        func refreshTray() { appDelegate.menuNeedsUpdate(tray) }
+        refreshTray()
+        precondition(tray.item(at: 0)!.title == "隐藏仓鼠")
+        for title in ["窗口大小", "显示水印", "深色模式", "退出 Hamster Pet"] {
+            precondition(tray.item(withTitle: title) != nil)
+        }
+        tray.performActionForItem(at: 0)
+        precondition(appDelegate.window?.isVisible == false)
+        refreshTray()
+        precondition(tray.item(at: 0)!.title == "显示仓鼠")
+        tray.performActionForItem(at: 0)
+        precondition(appDelegate.window?.isVisible == true)
+        refreshTray()
+        let pin = tray.item(withTitle: "置顶")!
+        tray.performActionForItem(at: tray.index(of: pin))
+        precondition(appDelegate.window?.level == .floating)
+        precondition((appDelegate.window?.contentView as! HamsterView).makeSettingsMenu().item(at: 0)!.state == .on)
+        appDelegate.window?.close()
+        precondition(!appDelegate.applicationShouldTerminateAfterLastWindowClosed(NSApp))
+        refreshTray()
+        tray.performActionForItem(at: 0)
+        precondition(appDelegate.window?.isVisible == true)
+        print("PASS: accessory app tray menu, shared settings, hide/show and reopen after closing")
     }
 }
