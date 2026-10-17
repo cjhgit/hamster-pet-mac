@@ -1,17 +1,9 @@
 import SwiftUI
-import Playgrounds
 
 struct ContentView: View {
     var body: some View {
-        Text("Hello, world!")
-            .padding()
+        HamsterCanvas()
+            .frame(minWidth: 320, minHeight: 300)
+            .background(Color(red: 40 / 255, green: 40 / 255, blue: 40 / 255))
     }
-}
-
-#Preview {
-    ContentView()
-}
-
-#Playground {
-    _ = 1 + 2
 }
