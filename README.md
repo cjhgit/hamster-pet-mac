@@ -2,6 +2,18 @@
 
 参考 `../hamster-html/README.md` 与对应源码实现的 macOS 应用。界面由 **AppKit + Core Graphics / Core Text** 原生绘制，仓鼠几何、行为状态机和物理算法转换为本地编译的 C++。不使用 WebKit、JavaScriptCore、网页、Flash 或远程脚本。
 
+## 下载正式版
+
+前往 [GitHub Releases](https://github.com/cjhgit/hamster-pet-mac/releases/latest)，下载 DMG，将 **Hamster Pet.app** 拖入 **Applications** 后打开。也提供 ZIP 与 SHA-256 校验文件，支持 macOS 14 及以上、Apple 芯片和 Intel。
+
+当前发布包使用临时签名，未经过 Apple Developer ID 签名与公证。若 macOS 阻止首次打开，先尝试打开一次，再到“系统设置 → 隐私与安全性 → 仍要打开”确认，无需关闭系统安全保护。应用启动后常驻菜单栏，不显示 Dock 图标。
+
+## 自动构建与发布
+
+`.github/workflows/release.yml` 在推送 `v1.0.0` 这类版本标签时自动测试、构建通用 `.app`、打包 DMG/ZIP、校验签名与启动并发布 GitHub Release。也可从 Actions 手动触发构建，下载测试产物。发布失败可在 Actions 里重跑失败任务。
+
+本地打包：`bash scripts/package-release.sh 1.0.0`，产物位于 `dist/`。CI 不需要签名密钥；无安全确认弹窗的分发需要另外配置 Apple Developer ID 签名和公证。
+
 ## 运行
 
 使用 Xcode 打开 `hamster-mac.xcodeproj`，选择 `hamster-mac` scheme 和 My Mac，运行即可。支持 macOS 14 及以上。
