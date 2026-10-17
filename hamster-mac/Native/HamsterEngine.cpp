@@ -29,6 +29,9 @@ using Args = std::vector<V>;
 using Fn = V(*)(V,const Args&);
 struct Shape {
     CGMutablePathRef path = CGPathCreateMutable();
+    std::vector<CGPoint> mesh;
+    bool meshReady = false;
+    CGRect meshBounds = CGRectNull;
     uint32_t color = 0; double alpha = 1, width = 0;
     Shape(uint32_t c,double a,double w=0):color(c),alpha(a),width(w){}
     ~Shape() { CGPathRelease(path); }
@@ -36,6 +39,12 @@ struct Shape {
 struct Graphics {
     std::vector<std::unique_ptr<Shape>> fills, strokes;
     Shape *fill = nullptr, *stroke = nullptr;
+    CGImageRef image = nullptr;
+    CGAffineTransform imageTransform = CGAffineTransformIdentity;
+    CGRect imageRect = CGRectZero;
+    bool imageNight = false;
+    double imageAlpha = 1;
+    ~Graphics() { if (image) CGImageRelease(image); }
     bool lineEnabled = false;
     double width=0, alpha=1; uint32_t color=0;
     CGPoint pen = CGPointZero;
@@ -51,12 +60,15 @@ struct Obj {
     std::unordered_map<int,V> fields;
     std::vector<V> elements;
     std::vector<V> children;
+    std::vector<V> drawChildren;
+    bool childrenOrderDirty = true;
     std::string text;
     Obj *prototype=nullptr, *instancePrototype=nullptr;
     Fn fn=nullptr, initializer=nullptr;
     std::unique_ptr<Graphics> graphics;
     bool marked=false;
     CTLineRef textLine=nullptr;
+    std::unique_ptr<Shape> textShape;
     bool textNight=false;
     double textAscent=0;
     ~Obj(){if(textLine)CFRelease(textLine);}
@@ -69,6 +81,8 @@ struct Engine {
     std::unordered_map<int,Timer> timers;
     uint32_t seed; int timerID=0,frames=0;
     double time=0;
+    std::vector<HamsterVertex> metalVertices;
+    std::vector<HamsterDrawCommand> metalCommands;
     explicit Engine(uint32_t s):seed(s) { for(int i=0;i<PropertyCount;i++) keys[propertyNames[i]]=i; }
     double random() { seed=seed*1664525u+1013904223u; return double(seed)/4294967296.0; }
     V allocate(Obj::Kind kind=Obj::Plain) {
@@ -180,6 +194,7 @@ V clip(V klass={}) {
 V addChild(V self,V child,V name,V depth) {
     if(!self.o)return {};
     auto& children=self.o->children;
+    self.o->childrenOrderDirty=true;
     for(auto it=children.begin();it!=children.end();) {
         if(G(*it,P__depth)==depth){R(*it,P__removed)=V(true);it=children.erase(it);}else ++it;
     }
@@ -198,10 +213,13 @@ V builtinDepth(V self,const Args&){return G(self,P__depth);}
 V builtinSwap(V self,const Args& a){
     V other=arg(a,0),parent=G(self,P__parent);
     if(!other.o&&parent.o) {for(auto c:parent.o->children)if(G(c,P__depth)==other){other=c;break;}}
+    if(parent.o)parent.o->childrenOrderDirty=true;
+    V otherParent=G(other,P__parent);if(otherParent.o)otherParent.o->childrenOrderDirty=true;
     V old=G(self,P__depth);R(self,P__depth)=other.o?G(other,P__depth):other;if(other.o)R(other,P__depth)=old;return {};
 }
 V builtinRemove(V self,const Args&) {
     V parent=G(self,P__parent);if(!parent.o)return {};
+    parent.o->childrenOrderDirty=true;
     auto& children=parent.o->children;children.erase(std::remove_if(children.begin(),children.end(),[self](V v){return v.o==self.o;}),children.end());
     R(parent,E->key(text(G(self,P__name))))={};R(self,P__removed)=V(true);return {};
 }
@@ -274,32 +292,58 @@ void setColor(CGContextRef ctx,uint32_t c,double alpha,bool stroke=false){
     CGFloat rgba[]={CGFloat(r),CGFloat(g),CGFloat(b),CGFloat(alpha)};
     if(stroke)CGContextSetStrokeColor(ctx,rgba);else CGContextSetFillColor(ctx,rgba);
 }
-void drawClip(V v,CGContextRef ctx,double alpha=1,bool night=false){
-    if(!v.o||!bool(G(v,P__visible))||bool(G(v,P_isMask))||bool(G(v,P__removed)))return;
+void drawGraphics(V v,CGContextRef ctx,double alpha,bool night) {
+    const bool background= v.o==G(E->root,P_bg).o || v.o==G(E->root,P_wheel).o;
+    const bool water= v.o==G(G(E->root,P_water),P_mcWater).o;
+    for(auto& s:v.o->graphics->fills){
+        uint32_t color=night&&background?0x354252:s->color;
+        if(night&&water)color=(((color>>16&255)*3/5)<<16)|(((color>>8&255)*3/5)<<8)|((color&255)*3/5);
+        setColor(ctx,color,s->alpha*alpha);CGContextAddPath(ctx,s->path);CGContextEOFillPath(ctx);
+    }
+    CGContextSetLineCap(ctx,kCGLineCapRound);CGContextSetLineJoin(ctx,kCGLineJoinRound);
+    for(auto& s:v.o->graphics->strokes){setColor(ctx,night&&v.o==G(E->root,P_bg).o?0x8291A4:s->color,s->alpha*alpha,true);CGContextSetLineWidth(ctx,s->width);CGContextAddPath(ctx,s->path);CGContextStrokePath(ctx);}
+}
+// Cache only the two large, stationary vector surfaces. Moving parts retain
+// vector rendering; the device transform keeps Retina edges pixel-aligned.
+bool drawCachedGraphics(V v,CGContextRef ctx,double alpha,bool night) {
+    if(v.o!=G(E->root,P_bg).o && v.o!=G(E->root,P_wheel).o)return false;
+    auto& g=*v.o->graphics;
+    auto transform=CGContextGetCTM(ctx);
+    if(!g.image || !CGAffineTransformEqualToTransform(transform,g.imageTransform) ||
+       g.imageNight!=night || g.imageAlpha!=alpha) {
+        if(g.image){CGImageRelease(g.image);g.image=nullptr;}
+        CGRect bounds=CGRectNull;
+        for(auto& s:g.fills)bounds=CGRectUnion(bounds,CGPathGetPathBoundingBox(s->path));
+        for(auto& s:g.strokes)bounds=CGRectUnion(bounds,CGRectInset(CGPathGetPathBoundingBox(s->path),-s->width/2,-s->width/2));
+        if(CGRectIsNull(bounds))return false;
+        auto pixels=CGRectIntegral(CGRectInset(CGRectApplyAffineTransform(bounds,transform),-1,-1));
+        // Bound cache memory for unusually large windows, falling back to vectors.
+        if(!std::isfinite(pixels.size.width)||!std::isfinite(pixels.size.height)||
+           pixels.size.width<=0||pixels.size.height<=0||pixels.size.width>4096||pixels.size.height>4096||
+           pixels.size.width*pixels.size.height>4*1024*1024)return false;
+        auto space=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        auto bitmap=CGBitmapContextCreate(nullptr,size_t(pixels.size.width),size_t(pixels.size.height),8,0,
+                                         space,kCGImageAlphaPremultipliedLast);
+        if(bitmap){CGContextSetFillColorSpace(bitmap,space);CGContextSetStrokeColorSpace(bitmap,space);}
+        CGColorSpaceRelease(space);
+        if(!bitmap)return false;
+        auto local=transform;local.tx-=pixels.origin.x;local.ty-=pixels.origin.y;
+        CGContextConcatCTM(bitmap,local);
+        drawGraphics(v,bitmap,alpha,night);
+        g.image=CGBitmapContextCreateImage(bitmap);
+        CGContextRelease(bitmap);
+        if(!g.image)return false;
+        g.imageTransform=transform;g.imageRect=pixels;g.imageNight=night;g.imageAlpha=alpha;
+    }
     CGContextSaveGState(ctx);
-    CGContextTranslateCTM(ctx,number(G(v,P__x)),number(G(v,P__y)));
-    CGContextRotateCTM(ctx,number(G(v,P__rotation))*M_PI/180);
-    CGContextScaleCTM(ctx,number(G(v,P__xscale))/100,number(G(v,P__yscale))/100);
-    alpha*=number(G(v,P__alpha))/100;
-    V mask=G(v,E->key("mask"));
-    if(mask.o&&mask.o->graphics){
-        CGMutablePathRef p=CGPathCreateMutable();CGAffineTransform t=CGAffineTransformMakeTranslation(number(G(mask,P__x)),number(G(mask,P__y)));
-        for(auto& shape:mask.o->graphics->fills)CGPathAddPath(p,&t,shape->path);
-        CGContextAddPath(ctx,p);CGContextClip(ctx);CGPathRelease(p);
-    }
-    if(v.o->graphics){
-        const bool background= v.o==G(E->root,P_bg).o || v.o==G(E->root,P_wheel).o;
-        const bool water= v.o==G(G(E->root,P_water),P_mcWater).o;
-        for(auto& s:v.o->graphics->fills){
-            uint32_t color=night&&background?0x354252:s->color;
-            if(night&&water)color=(((color>>16&255)*3/5)<<16)|(((color>>8&255)*3/5)<<8)|((color&255)*3/5);
-            setColor(ctx,color,s->alpha*alpha);CGContextAddPath(ctx,s->path);CGContextEOFillPath(ctx);
-        }
-        CGContextSetLineCap(ctx,kCGLineCapRound);CGContextSetLineJoin(ctx,kCGLineJoinRound);
-        for(auto& s:v.o->graphics->strokes){setColor(ctx,night&&v.o==G(E->root,P_bg).o?0x8291A4:s->color,s->alpha*alpha,true);CGContextSetLineWidth(ctx,s->width);CGContextAddPath(ctx,s->path);CGContextStrokePath(ctx);}
-    }
+    CGContextConcatCTM(ctx,CGAffineTransformInvert(transform));
+    CGContextSetInterpolationQuality(ctx,kCGInterpolationNone);
+    CGContextDrawImage(ctx,g.imageRect,g.image);
+    CGContextRestoreGState(ctx);
+    return true;
+}
+void prepareText(V v,double alpha,bool night) {
     V format=G(v,P_format);
-    if(format.o){
       if(v.o->textLine && v.o->textNight!=night){CFRelease(v.o->textLine);v.o->textLine=nullptr;}
       if(!v.o->textLine){
         CTFontRef font=CTFontCreateWithName(CFSTR("Icicle Country 2"),number(G(format,P_size)),nullptr);
@@ -316,14 +360,42 @@ void drawClip(V v,CGContextRef ctx,double alpha=1,bool night=false){
         v.o->textAscent=9.25*number(G(format,P_size))/14;
         CFRelease(attr);CFRelease(attrs);CGColorRelease(color);CGColorSpaceRelease(space);CFRelease(str);CFRelease(font);
       }
+}
+void drawClip(V v,CGContextRef ctx,double alpha=1,bool night=false,bool cache=true){
+    if(!v.o||!bool(G(v,P__visible))||bool(G(v,P_isMask))||bool(G(v,P__removed)))return;
+    CGContextSaveGState(ctx);
+    CGContextTranslateCTM(ctx,number(G(v,P__x)),number(G(v,P__y)));
+    CGContextRotateCTM(ctx,number(G(v,P__rotation))*M_PI/180);
+    CGContextScaleCTM(ctx,number(G(v,P__xscale))/100,number(G(v,P__yscale))/100);
+    alpha*=number(G(v,P__alpha))/100;
+    V mask=G(v,E->key("mask"));
+    if(mask.o&&mask.o->graphics){
+        CGMutablePathRef p=CGPathCreateMutable();CGAffineTransform t=CGAffineTransformMakeTranslation(number(G(mask,P__x)),number(G(mask,P__y)));
+        for(auto& shape:mask.o->graphics->fills)CGPathAddPath(p,&t,shape->path);
+        CGContextAddPath(ctx,p);CGContextClip(ctx);CGPathRelease(p);
+    }
+    if(v.o->graphics && (!cache || !drawCachedGraphics(v,ctx,alpha,night)))drawGraphics(v,ctx,alpha,night);
+    V format=G(v,P_format);
+    if(format.o){
+        prepareText(v,alpha,night);
         CGContextSaveGState(ctx);CGContextSetAlpha(ctx,alpha);CGContextTranslateCTM(ctx,2,5+v.o->textAscent);CGContextScaleCTM(ctx,1,-1);CGContextSetTextMatrix(ctx,CGAffineTransformIdentity);CGContextSetTextPosition(ctx,0,0);CTLineDraw(v.o->textLine,ctx);CGContextRestoreGState(ctx);
     }
     // Original depth swaps determine which ears, feet, and face parts occlude others.
-    auto children=v.o->children;
-    std::stable_sort(children.begin(),children.end(),[](V a,V b){return number(G(a,P__depth))<number(G(b,P__depth));});
-    for(auto child:children)drawClip(child,ctx,alpha,night);
+    if(!cache) {
+        auto children=v.o->children;
+        std::stable_sort(children.begin(),children.end(),[](V a,V b){return number(G(a,P__depth))<number(G(b,P__depth));});
+        for(auto child:children)drawClip(child,ctx,alpha,night,false);
+    } else {
+        if(v.o->childrenOrderDirty) {
+            v.o->drawChildren=v.o->children;
+            std::stable_sort(v.o->drawChildren.begin(),v.o->drawChildren.end(),[](V a,V b){return number(G(a,P__depth))<number(G(b,P__depth));});
+            v.o->childrenOrderDirty=false;
+        }
+        for(auto child:v.o->drawChildren)drawClip(child,ctx,alpha,night);
+    }
     CGContextRestoreGState(ctx);
 }
+#include "MetalGeometry.hpp"
 } // namespace
 
 void *HamsterEngineCreate(uint32_t seed){auto *engine=new Engine(seed);E=engine;initializeRuntime();return engine;}
@@ -333,6 +405,13 @@ void HamsterEngineStart(void *engine){E=static_cast<Engine*>(engine);initializeT
 void HamsterEngineSetWatermarkVisible(void *engine,int visible){E=static_cast<Engine*>(engine);R(G(E->root,P_txt),P__visible)=V(visible!=0);}
 void HamsterEngineStep(void *engine,double elapsed){E=static_cast<Engine*>(engine);advance(std::max(0.0,elapsed));call(E->root,P_onEnterFrame,{});call(G(E->root,P_ham),P_onEnterFrame,{});if(++E->frames%30==0)E->collect();}
 void HamsterEngineMouse(void *engine,double x,double y,int action){E=static_cast<Engine*>(engine);if(action!=2){R(E->root,P__xmouse)=V(x);R(E->root,P__ymouse)=V(y);}if(action==0)call(E->root,P_onMouseMove,{});if(action==1){call(E->root,P_onMouseMove,{});call(E->root,P_onMouseDown,{});}if(action==2)call(E->root,P_onMouseUp,{});}
+void HamsterEnginePurgeRenderCache(void *engine){
+    E=static_cast<Engine*>(engine);
+    for(int key:{P_bg,P_wheel}) {
+        V v=G(E->root,key);
+        if(v.o&&v.o->graphics&&v.o->graphics->image){CGImageRelease(v.o->graphics->image);v.o->graphics->image=nullptr;}
+    }
+}
 void HamsterEngineDraw(void *engine,CGContextRef ctx){
     HamsterEngineDrawWithTheme(engine,ctx,0);
 }
@@ -344,3 +423,16 @@ void HamsterEngineDrawWithTheme(void *engine,CGContextRef ctx,int night){
     drawClip(E->root,ctx,1,night!=0);
     CGContextRestoreGState(ctx);
 }
+
+HamsterMetalFrame HamsterEngineBuildMetalFrame(void *engine,int night){
+    E=static_cast<Engine*>(engine);
+    E->metalVertices.clear();E->metalCommands.clear();
+    // A white canvas is also geometry, so transparent window corners stay clear.
+    uint32_t cover=metalQuad(CGRectMake(-1,-1,282,212));
+    E->metalCommands.push_back({cover,6,cover,4,1,1,1,1});
+    metalClip(E->root,CGAffineTransformIdentity,1,night!=0);
+    return {E->metalVertices.data(),E->metalCommands.data(),uint32_t(E->metalVertices.size()),uint32_t(E->metalCommands.size())};
+}
+
+int HamsterEngineGetFrameCount(void *engine){return static_cast<Engine*>(engine)->frames;}
+double HamsterEngineGetElapsedMilliseconds(void *engine){return static_cast<Engine*>(engine)->time;}

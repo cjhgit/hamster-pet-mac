@@ -82,6 +82,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > .build/release-notes.md <<'EOF'
+          ## 本次更新
+          - 默认采用 Metal GPU 渲染矢量场景和夜间光照，保留 Core Graphics 自动回退。
+          - 缓存静态网格和圆角模板，减少重复三角函数、坐标计算与节点排序，保持 30 FPS。
+          - 窗口隐藏、最小化或完全被遮挡时停止动画和 GPU 提交，释放绘制表面；恢复时不追赶暂停时间。
+          - 新增 GPU 图像对照、真实窗口 CPU 基准及 GPU／CPU 回退交互验证。
+
+          本机 Apple M4 Pro、大尺寸窗口、1× 显示缩放、每项测量 8 秒：应用进程 CPU 浅色模式约 9.1% → 5.4%，深色模式约 9.7% → 6.0%，约降低四成。保持 30 FPS；数值随设备和场景变化，不含 WindowServer，也不代表整机功耗。
+
           ## 下载与安装
           - 支持 macOS 14 及以上，Apple 芯片与 Intel 通用。
           - 下载 DMG 后将 **Hamster Pet.app** 拖入 **Applications**；也可下载 ZIP 解压安装。

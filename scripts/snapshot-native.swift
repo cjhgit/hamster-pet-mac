@@ -50,14 +50,13 @@ import CoreText
         window.setContentSize(HamsterWindow.sizes[2].size)
         print("PASS: persisted preset/custom window sizes and pin/unpin restore in new windows")
         // Offscreen AppKit capture exercises the actual shipping view and layout.
-        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { fatalError("No bitmap") }
-        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let bitmap = view.captureSnapshot() else { fatalError("No bitmap") }
+
         let output = URL(fileURLWithPath: "/private/tmp/hamster-native-window.png")
         try bitmap.representation(using: .png, properties: [:])!.write(to: output)
         print("PASS: actual AppKit view rendered to \(output.path)")
         view.setFrameSize(NSSize(width: 375, height: 600))
-        let narrow = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
-        view.cacheDisplay(in: view.bounds, to: narrow)
+        let narrow = view.captureSnapshot()!
         try narrow.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "/private/tmp/hamster-native-narrow.png"))
         print("PASS: narrow AppKit window rendered")
         func mouse(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent {
@@ -83,8 +82,7 @@ import CoreText
         contextMenu().performActionForItem(at: 2)
         precondition(contextMenu().item(at: 2)!.state == .off && HamsterTestWatermarkVisible() == 0)
         view.setFrameSize(window.frame.size)
-        let hidden = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
-        view.cacheDisplay(in: view.bounds, to: hidden)
+        let hidden = view.captureSnapshot()!
         try hidden.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "/private/tmp/hamster-native-no-watermark.png"))
         let restoredView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!)
         precondition(HamsterTestWatermarkVisible() == 0 && restoredView.menu(for: contextEvent)!.item(at: 2)!.state == .off)
@@ -94,8 +92,7 @@ import CoreText
         precondition(HamsterTestWatermarkVisible() == 1 && visibleView.menu(for: contextEvent)!.item(at: 2)!.state == .on)
         print("PASS: watermark visibility toggles in engine and persists when hidden or shown")
         func capture(_ target: HamsterView) -> NSBitmapImageRep {
-            let bitmap = target.bitmapImageRepForCachingDisplay(in: target.bounds)!
-            target.cacheDisplay(in: target.bounds, to: bitmap)
+            let bitmap = target.captureSnapshot()!
             return bitmap
         }
         let daylight = capture(view)
@@ -135,12 +132,40 @@ import CoreText
         for title in ["窗口大小", "显示水印", "深色模式", "退出 Hamster Pet"] {
             precondition(tray.item(withTitle: title) != nil)
         }
+        func pumpEvents(for duration: TimeInterval) {
+            let deadline = Date(timeIntervalSinceNow: duration)
+            repeat {
+                while let event = NSApp.nextEvent(matching: .any, until: Date(), inMode: .default, dequeue: true) {
+                    NSApp.sendEvent(event)
+                }
+                NSApp.updateWindows()
+                RunLoop.current.run(until: min(deadline, Date(timeIntervalSinceNow: 0.01)))
+            } while Date() < deadline
+        }
+        let activeView = appDelegate.window!.contentView as! HamsterView
+        appDelegate.window?.level = .floating
+        pumpEvents(for: 0.2)
+        let activeFrames = activeView.simulationFrames
+        precondition(activeFrames > 1, "Visible window must animate (frames: \(activeFrames), occlusion: \(appDelegate.window!.occlusionState.rawValue))")
         tray.performActionForItem(at: 0)
         precondition(appDelegate.window?.isVisible == false)
+        pumpEvents(for: 0.1)
+        let pausedGPUFrames = activeView.gpuSubmittedFrames
+        let pausedFrames = activeView.simulationFrames
+        let pausedTime = activeView.simulationMilliseconds
+        pumpEvents(for: 0.3)
+        precondition(activeView.gpuSubmittedFrames == pausedGPUFrames)
+        precondition(activeView.simulationFrames == pausedFrames && activeView.simulationMilliseconds == pausedTime)
         refreshTray()
         precondition(tray.item(at: 0)!.title == "显示仓鼠")
         tray.performActionForItem(at: 0)
         precondition(appDelegate.window?.isVisible == true)
+        pumpEvents(for: 0.15)
+        precondition(activeView.simulationFrames > pausedFrames)
+        if activeView.usesMetal { precondition(activeView.gpuSubmittedFrames > pausedGPUFrames) }
+        precondition(activeView.simulationMilliseconds - pausedTime < 250, "Hidden time must not advance simulation timers")
+        print("PASS: visible animation advances, hidden animation pauses and resume excludes hidden time")
+        appDelegate.window?.level = .normal
         refreshTray()
         let pin = tray.item(withTitle: "置顶")!
         tray.performActionForItem(at: tray.index(of: pin))

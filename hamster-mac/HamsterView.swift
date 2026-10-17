@@ -1,5 +1,7 @@
 import AppKit
 import CoreText
+import MetalKit
+import QuartzCore
 import SwiftUI
 
 final class HamsterWindow: NSWindow, NSWindowDelegate {
@@ -59,7 +61,7 @@ struct HamsterCanvas: NSViewRepresentable {
     func updateNSView(_ nsView: HamsterView, context: Context) {}
 }
 
-/// AppKit input and Core Graphics rendering, with no browser or script runtime.
+/// AppKit input with on-demand Metal rendering and a Core Graphics fallback.
 final class HamsterView: NSView {
     private let engine: UnsafeMutableRawPointer
     private let preferences: UserDefaults
@@ -68,6 +70,15 @@ final class HamsterView: NSView {
     private static let darkModeKey = "hamster.darkMode"
     private var isDarkMode = false
     private var timer: Timer?
+    private var metalRenderer: HamsterMetalRenderer?
+    private let lampLayer = CALayer()
+    private let focusLayer = CAShapeLayer()
+    private var lampPixelScale: CGFloat = 0
+    var usesMetal: Bool { metalRenderer != nil }
+    var gpuSubmittedFrames: Int { metalRenderer?.submittedFrames ?? 0 }
+    private(set) var cpuRenderedFrames = 0
+    var simulationFrames: Int { Int(HamsterEngineGetFrameCount(engine)) }
+    var simulationMilliseconds: Double { HamsterEngineGetElapsedMilliseconds(engine) }
     private var observers: [NSObjectProtocol] = []
     private var previousTime = ProcessInfo.processInfo.systemUptime
     private var accumulator = 0.0
@@ -92,7 +103,7 @@ final class HamsterView: NSView {
         self.init(frame: frameRect, seed: UInt32.random(in: .min ... .max))
     }
 
-    init(frame frameRect: NSRect, seed: UInt32, preferences: UserDefaults = .standard) {
+    init(frame frameRect: NSRect, seed: UInt32, preferences: UserDefaults = .standard, prefersMetal: Bool = true) {
         self.preferences = preferences
         engine = HamsterEngineCreate(seed)!
         super.init(frame: frameRect)
@@ -111,6 +122,14 @@ final class HamsterView: NSView {
         isDarkMode = preferences.bool(forKey: Self.darkModeKey)
         updateWatermark()
         setAccessibilityHelp("点击空白处投食，按住拖动或抛出食物；点击黄色轮心让仓鼠上跑轮。移动鼠标可唤醒仓鼠。")
+        if prefersMetal && !ProcessInfo.processInfo.arguments.contains("--hamster-cpu-renderer"),
+           let renderer = HamsterMetalRenderer(engine: engine) {
+            metalRenderer = renderer
+            addSubview(renderer.view)
+            renderer.view.layer?.addSublayer(lampLayer)
+            renderer.view.layer?.addSublayer(focusLayer)
+            updateMetalLayout()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -172,16 +191,21 @@ final class HamsterView: NSView {
         if window?.isKeyWindow != true { releaseFood() }
         let visible = window?.occlusionState.contains(.visible) == true && window?.isMiniaturized == false && !NSApp.isHidden
         if visible && timer == nil {
+            previousTime = ProcessInfo.processInfo.systemUptime
             accumulator = 0
+            pendingTimerMilliseconds = 0
             let timer = Timer(timeInterval: 1 / 30, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.tick() }
             }
+            timer.tolerance = 1 / 300
             self.timer = timer
             RunLoop.main.add(timer, forMode: .common)
             needsDisplay = true
         } else if !visible {
             timer?.invalidate()
             timer = nil
+            HamsterEnginePurgeRenderCache(engine)
+            metalRenderer?.releaseDrawables()
         }
     }
 
@@ -199,7 +223,18 @@ final class HamsterView: NSView {
             accumulator -= 1 / 30
             advanced = true
         }
-        if advanced { needsDisplay = true }
+        if advanced {
+            if let renderer = metalRenderer, !renderer.failed {
+                renderer.night = isDarkMode
+                renderer.view.draw()
+            } else {
+                if let renderer = metalRenderer {
+                    renderer.view.removeFromSuperview()
+                    metalRenderer = nil
+                }
+                needsDisplay = true
+            }
+        }
     }
 
     private var canvasRect: NSRect {
@@ -228,30 +263,66 @@ final class HamsterView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if let renderer = metalRenderer, NSGraphicsContext.current?.isDrawingToScreen == true {
+            updateMetalLayout()
+            renderer.night = isDarkMode
+            renderer.view.draw()
+            return
+        }
         guard let context = NSGraphicsContext.current?.cgContext else { return }
+        if NSGraphicsContext.current?.isDrawingToScreen == true { cpuRenderedFrames += 1 }
+        render(in: context)
+    }
+
+    /// Metal surfaces cannot be captured with NSView.cacheDisplay. Read back only
+    /// for an explicit snapshot; normal animation never transfers pixels to CPU.
+    func captureSnapshot() -> NSBitmapImageRep? {
+        let backing = window?.backingScaleFactor ?? 2
+        let width = Int(ceil(bounds.width * backing)), height = Int(ceil(bounds.height * backing))
+        guard width > 0, height > 0, let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: backing, y: -backing)
+        metalRenderer?.night = isDarkMode
+        let rect = canvasRect
+        let image = metalRenderer?.snapshot(size: CGSize(width: ceil(rect.width * backing), height: ceil(rect.height * backing)))
+        render(in: context, gpuImage: image)
+        return context.makeImage().map { NSBitmapImageRep(cgImage: $0) }
+    }
+
+    private func render(in context: CGContext, gpuImage: CGImage? = nil) {
         let rect = canvasRect
         context.saveGState()
         let scale = rect.width / 282
         let outline = CGPath(roundedRect: rect, cornerWidth: 6 * scale, cornerHeight: 6 * scale, transform: nil)
         context.addPath(outline)
         context.clip()
-        Self.background.setFill()
-        bounds.fill()
+        context.setFillColor(Self.background.cgColor)
+        context.fill(bounds)
         context.translateBy(x: rect.minX + scale, y: rect.minY + scale)
         context.scaleBy(x: scale, y: scale)
-        HamsterEngineDrawWithTheme(engine, context, isDarkMode ? 1 : 0)
-        if isDarkMode {
+        if let image = gpuImage {
             context.saveGState()
-            context.setBlendMode(.multiply)
-            let light = CGPoint(x: 259, y: 40)
-            context.setFillColor(NSColor(srgbRed: 0.90, green: 0.92, blue: 0.96, alpha: 1).cgColor)
-            context.fill(CGRect(x: -1, y: -1, width: 282, height: 212))
-            context.setBlendMode(.screen)
-            context.drawRadialGradient(Self.lampGlow, startCenter: light, startRadius: 0,
-                                       endCenter: light, endRadius: 32, options: [])
+            context.translateBy(x: -1, y: 211)
+            context.scaleBy(x: 1, y: -1)
+            context.draw(image, in: CGRect(x: 0, y: 0, width: 282, height: 212))
             context.restoreGState()
-            drawNightLamp(in: context)
+        } else {
+            HamsterEngineDrawWithTheme(engine, context, isDarkMode ? 1 : 0)
+            if isDarkMode {
+                context.saveGState()
+                context.setBlendMode(.multiply)
+                let light = CGPoint(x: 259, y: 40)
+                context.setFillColor(NSColor(srgbRed: 0.90, green: 0.92, blue: 0.96, alpha: 1).cgColor)
+                context.fill(CGRect(x: -1, y: -1, width: 282, height: 212))
+                context.setBlendMode(.screen)
+                context.drawRadialGradient(Self.lampGlow, startCenter: light, startRadius: 0,
+                                           endCenter: light, endRadius: 32, options: [])
+                context.restoreGState()
+            }
         }
+        if isDarkMode { drawNightLamp(in: context) }
         context.restoreGState()
         if authorFocused && window?.firstResponder === self {
             let focus = authorRect.insetBy(dx: -2, dy: -2)
@@ -264,6 +335,49 @@ final class HamsterView: NSView {
             context.restoreGState()
         }
 
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateMetalLayout()
+    }
+
+    private func updateMetalLayout() {
+        guard let renderer = metalRenderer else { return }
+        let rect = canvasRect
+        let scale = rect.width / 282
+        let pixelScale = scale * (window?.backingScaleFactor ?? 2)
+        guard pixelScale > 0 else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        renderer.view.frame = rect
+        renderer.view.layer?.cornerRadius = 6 * scale
+        lampLayer.frame = CGRect(x: 245 * scale, y: scale, width: 30 * scale, height: 49 * scale)
+        lampLayer.isHidden = !isDarkMode
+        if isDarkMode && (lampPixelScale != pixelScale || lampLayer.contents == nil) {
+            let width = Int(ceil(30 * pixelScale)), height = Int(ceil(49 * pixelScale))
+            if let space = CGColorSpace(name: CGColorSpace.sRGB),
+               let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                       space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+                context.translateBy(x: 0, y: CGFloat(height))
+                context.scaleBy(x: pixelScale, y: -pixelScale)
+                context.translateBy(x: -244, y: 0)
+                drawNightLamp(in: context)
+                lampLayer.contents = context.makeImage()
+                lampLayer.contentsScale = window?.backingScaleFactor ?? 2
+                lampPixelScale = pixelScale
+            }
+        }
+        focusLayer.frame = CGRect(origin: .zero, size: rect.size)
+        focusLayer.isHidden = !authorFocused || window?.firstResponder !== self
+        focusLayer.fillColor = nil
+        focusLayer.strokeColor = NSColor.keyboardFocusIndicatorColor.cgColor
+        focusLayer.lineWidth = 2 * scale
+        let focus = authorRect.insetBy(dx: -2, dy: -2)
+        focusLayer.path = CGPath(rect: CGRect(x: (focus.minX + 1) * scale, y: (focus.minY + 1) * scale,
+                                             width: focus.width * scale, height: focus.height * scale), transform: nil)
+        renderer.night = isDarkMode
+        CATransaction.commit()
     }
 
     private func drawNightLamp(in context: CGContext) {
@@ -364,6 +478,7 @@ final class HamsterView: NSView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        updateMetalLayout()
         needsDisplay = true
         window?.invalidateCursorRects(for: self)
     }

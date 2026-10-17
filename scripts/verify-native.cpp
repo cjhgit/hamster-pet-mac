@@ -40,9 +40,52 @@ static void printGeometry(V v){
     shapes(v.o->graphics->fills);printf("],\"strokes\":[");shapes(v.o->graphics->strokes);printf("],\"children\":[");
     bool first=true;for(auto child:v.o->children){if(!first)printf(",");first=false;printGeometry(child);}printf("]}");
 }
+static void verifyRenderingCache(void *engine) {
+    auto space=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    for(int width:{371,742,1484})for(bool night:{false,true,false}) {
+        int height=int(std::ceil(width*212.0/282));
+        auto cached=CGBitmapContextCreate(nullptr,width,height,8,0,space,kCGImageAlphaPremultipliedLast);
+        auto vector=CGBitmapContextCreate(nullptr,width,height,8,0,space,kCGImageAlphaPremultipliedLast);
+        for(auto ctx:{cached,vector}) {
+            CGContextSetFillColorSpace(ctx,space);CGContextSetStrokeColorSpace(ctx,space);
+            CGContextTranslateCTM(ctx,0.375,height-0.25);
+            CGContextScaleCTM(ctx,width/282.0,-width/282.0);
+        }
+        HamsterEngineMouse(engine,100+width%100,80,1);
+        HamsterEngineMouse(engine,0,0,2);
+        HamsterEngineDrawWithTheme(engine,cached,night);
+        drawClip(E->root,vector,1,night,false);
+        auto a=static_cast<const unsigned char*>(CGBitmapContextGetData(cached));
+        auto b=static_cast<const unsigned char*>(CGBitmapContextGetData(vector));
+        int largest=0;double difference=0;
+        for(int y=0;y<height;y++)for(int x=0;x<width*4;x++) {
+            int d=std::abs(int(a[y*CGBitmapContextGetBytesPerRow(cached)+x])-int(b[y*CGBitmapContextGetBytesPerRow(vector)+x]));
+            largest=std::max(largest,d);difference+=d;
+        }
+        printf("CACHE: %dpx %s, max channel delta %d, mean %.6f\n",width,night?"night":"day",largest,difference/(width*height*4));
+        assert(largest<=2);
+        assert(G(E->root,P_bg).o->graphics->image && G(E->root,P_wheel).o->graphics->image);
+        CGContextRelease(cached);CGContextRelease(vector);
+        tick(engine,30);
+    }
+    HamsterEnginePurgeRenderCache(engine);
+    assert(!G(E->root,P_bg).o->graphics->image && !G(E->root,P_wheel).o->graphics->image);
+    // Oversized scales must release their previous cache and use vector drawing.
+    auto tiny=CGBitmapContextCreate(nullptr,16,16,8,0,space,kCGImageAlphaPremultipliedLast);
+    HamsterEngineDraw(engine,tiny);
+    assert(G(E->root,P_bg).o->graphics->image && G(E->root,P_wheel).o->graphics->image);
+    CGContextScaleCTM(tiny,100,100);
+    HamsterEngineDraw(engine,tiny);
+    assert(!G(E->root,P_bg).o->graphics->image && !G(E->root,P_wheel).o->graphics->image);
+    CGContextRelease(tiny);CGColorSpaceRelease(space);
+    puts("PASS: cached/vector rendering at three scales, fractional origins, theme changes, cache purge and memory limit");
+}
 int main(int argc,char** argv){
     void* engine=HamsterEngineCreate(11042);HamsterEngineStart(engine);
     V root=E->root,h=G(root,P_ham);
+    if(argc>1&&std::string(argv[1])=="--cache") {
+        verifyRenderingCache(engine);HamsterEngineDestroy(engine);return 0;
+    }
     if(argc>1&&std::string(argv[1])=="--trace") {
         trace(engine,0);
         for(int i=1;i<=16000;i++){tick(engine,1);if(i<=30||i%100==0)trace(engine,i);}
@@ -89,14 +132,27 @@ int main(int argc,char** argv){
     HamsterEngineMouse(engine,140,100,0);run(1);assert(!bool(G(h,P_sleeping)));
     assert(n(G(root,P_freshFood),P_length)+n(G(root,P_eatenFood),P_length)==10);
     puts("PASS: wheel, fatigue, food eating/recycling, drinking, grooming, sleep and wake, 9-minute simulation");
-    // Rendering benchmark uses a real Retina-sized Core Graphics bitmap.
-    CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
+    verifyRenderingCache(engine);
+    // Alternate cached/vector rendering of the same frames for a fair comparison.
+    CGColorSpaceRef space=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     CGContextRef ctx=CGBitmapContextCreate(nullptr,1484,1100,8,0,space,kCGImageAlphaPremultipliedLast);
+    CGContextSetFillColorSpace(ctx,space);CGContextSetStrokeColorSpace(ctx,space);
     CGContextTranslateCTM(ctx,0,1100);CGContextScaleCTM(ctx,1484.0/280,-1100.0/210);
-    auto start=std::chrono::steady_clock::now();
-    for(int i=0;i<300;i++){tick(engine,1);HamsterEngineDraw(engine,ctx);}
-    double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/300;
+    double stepMilliseconds=0,cachedMilliseconds=0,vectorMilliseconds=0;
+    for(int i=0;i<300;i++){
+        auto start=std::chrono::steady_clock::now();tick(engine,1);
+        stepMilliseconds+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+        for(bool cache:{i%2==0,i%2!=0}) {
+            start=std::chrono::steady_clock::now();
+            if(cache)HamsterEngineDraw(engine,ctx);else drawClip(E->root,ctx,1,false,false);
+            double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+            (cache?cachedMilliseconds:vectorMilliseconds)+=ms;
+        }
+    }
+    double ms=(stepMilliseconds+cachedMilliseconds)/300;
     printf("PERF: native simulation + Retina bitmap render: %.3f ms/frame; live objects: %zu\n",ms,E->heap.size());
+    printf("PERF: draw cached %.3f vs vector %.3f ms/frame (%.1f%% less); simulation %.3f ms/frame\n",
+           cachedMilliseconds/300,vectorMilliseconds/300,100*(1-cachedMilliseconds/vectorMilliseconds),stepMilliseconds/300);
     assert(ms<1000.0/30);
     CGContextRelease(ctx);CGColorSpaceRelease(space);
     HamsterEngineDestroy(engine);

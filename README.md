@@ -29,7 +29,7 @@ The current releases are ad hoc signed and have not been signed with an Apple De
 - **A flexible window:** rounded corners, a draggable top area, always-on-top mode, three size presets, and manual resizing.
 - **Comfortable dark mode:** a blue-gray background, clear pet and food colors, a dimmer water bottle, and a small decorative warm lamp.
 - **Remembered preferences:** window size, always-on-top mode, watermark visibility, and dark mode survive restarts.
-- **Native rendering:** AppKit and Core Graphics, with no embedded browser. Animation pauses while the window is hidden, minimized, or fully covered.
+- **Native GPU rendering:** Metal draws the vector scene and night lighting at 30 FPS, with an automatic Core Graphics fallback when a GPU is unavailable. Animation pauses and rendering surfaces are released while hidden, minimized, or fully covered. No embedded browser.
 
 ## Take a look
 
@@ -87,11 +87,17 @@ bash scripts/snapshot-native.sh
 
 # Engine behavior, colors, rendering performance, and reference parity
 bash scripts/verify-native.sh /path/to/hamster-html
+
+# Compare actual Metal and Core Graphics images (requires a Metal GPU)
+bash scripts/verify-metal.sh
+
+# Application-process CPU comparison with real windows, both themes and hidden state
+bash scripts/verify-metal.sh --benchmark
 ```
 
 The second command requires the separate reference project, which defaults to the sibling directory `../hamster-html` when no path is supplied. The release workflow runs the standalone native engine checks without that reference project.
 
-AppKit verification writes screenshots to `/private/tmp/hamster-native-*.png`. Engine checks cover feeding, physics, behavior states, food recycling, a simulated nine-minute session, and all 13 color settings. Reference checks additionally compare sampled state and scene geometry. Rendering measurements depend on the machine and do not represent the app's total CPU usage.
+AppKit verification writes screenshots to `/private/tmp/hamster-native-*.png`. Engine checks cover feeding, physics, behavior states, food recycling, a simulated nine-minute session, and all 13 color settings. Reference checks additionally compare sampled state and scene geometry. Rendering checks also compare cached and original vector output pixel by pixel at three resolutions, exercise theme changes, cache release and memory limits, and report both rendering times. Single-frame timings depend on the machine and do not represent the app's total CPU usage. `verify-metal.sh` compares actual GPU readbacks at multiple animation checkpoints. Its `--benchmark` mode uses a fixed seed, a pinned large window, and the native application event loop, warming up for one second and measuring eight seconds per renderer/theme while checking simulation and rendered frame counts. CPU percentages use user plus system time across all process threads, with 100% representing one CPU core; they exclude WindowServer and do not measure GPU power.
 
 ### Releases
 
@@ -107,12 +113,14 @@ Output goes to `dist/`. The current pipeline uses ad hoc signing and requires no
 
 ### Implementation
 
-- [`HamsterView.swift`](hamster-mac/HamsterView.swift): rendering, input, scene coordinates, preferences, and 30 FPS scheduling.
+- [`HamsterView.swift`](hamster-mac/HamsterView.swift): input, scene coordinates, preferences, 30 FPS scheduling, and fallback rendering.
+- [`HamsterMetalRenderer.swift`](hamster-mac/HamsterMetalRenderer.swift): on-demand Metal submission, stencil coverage for fills/strokes/masks, and GPU night lighting.
+- [`MetalGeometry.hpp`](hamster-mac/Native/MetalGeometry.hpp): path triangulation, static mesh caching, and draw-command export.
 - [`AppDelegate.swift`](hamster-mac/AppDelegate.swift): application lifecycle and menu bar controls.
 - [`HamsterEngine.cpp`](hamster-mac/Native/HamsterEngine.cpp): the native scene model, Core Graphics rendering, timers, and object reclamation.
 - [`Original.hpp`](hamster-mac/Native/Original.hpp): generated C++ port of the reference algorithms, with the source SHA-256 recorded in its header.
 
-Physics uses fixed 30 FPS steps with at most three catch-up frames. Updates run serially on the main thread, and unreachable engine objects are reclaimed periodically. Core Graphics and browser rendering may differ in typography and antialiasing.
+Physics uses fixed 30 FPS steps with at most three catch-up frames. Updates run serially on the main thread, and unreachable engine objects are reclaimed periodically. Metal uses 4x MSAA when supported (otherwise single sampling), permits at most three frames in flight, and has no independent continuous draw loop. Hidden windows stop submitting and release drawing surfaces. Interactive rendering never reads pixels back or synchronously waits for the GPU. Use `./run.sh --hamster-cpu-renderer` to force Core Graphics for diagnosis. In the Core Graphics fallback, the static background and wheel frame are cached at device resolution and rebuilt when the scale or theme changes. Each of the two caches is limited to about 16 MiB; oversized windows fall back to vector drawing. Child draw order is sorted again only when nodes are added, removed, or change depth. Resuming a window resets timing without catching up on time spent hidden. Core Graphics and browser rendering may differ in typography and antialiasing.
 
 If the reference algorithms change, regenerate the port with Node.js and TypeScript:
 

@@ -29,7 +29,7 @@
 - **灵活的窗口：**圆角外观、顶部拖拽、置顶开关、小中大三档尺寸，也支持手动缩放。
 - **适合日常使用的深色模式：**深蓝灰背景，仓鼠和食物清晰可见，水瓶适当调暗，右上角有一盏暖色小灯点缀。
 - **自动记住设置：**窗口大小、置顶、水印显示和深色模式会在重启后恢复。
-- **原生绘制：**使用 AppKit 和 Core Graphics，无内嵌浏览器；窗口隐藏、最小化或完全被遮挡时暂停动画。
+- **GPU 原生绘制：**默认使用 Metal 绘制矢量场景和夜间光照，保持 30 FPS；无可用 GPU 时自动回退到 Core Graphics。窗口隐藏、最小化或完全被遮挡时暂停动画并释放绘制表面，无内嵌浏览器。
 
 ## 效果预览
 
@@ -85,11 +85,17 @@ bash scripts/snapshot-native.sh
 
 # 引擎行为、颜色、绘制性能与参考算法对照
 bash scripts/verify-native.sh /path/to/hamster-html
+
+# Metal 与 Core Graphics 图像对照（需要可用的 Metal GPU）
+bash scripts/verify-metal.sh
+
+# 实际窗口的应用进程 CPU 占用对照：深浅色、30 FPS、隐藏状态
+bash scripts/verify-metal.sh --benchmark
 ```
 
 第二条命令需要单独的参考项目；省略路径时默认读取相邻的 `../hamster-html`。发布工作流会独立运行原生引擎检查，无需参考项目。
 
-AppKit 验证输出截图至 `/private/tmp/hamster-native-*.png`。引擎检查覆盖投食、物理、行为状态、食物回收、约九分钟模拟和 13 项颜色设置；参考对照进一步比较抽样状态与场景几何。绘制性能取决于设备，不代表整个应用的 CPU 占用。
+AppKit 验证输出截图至 `/private/tmp/hamster-native-*.png`。引擎检查覆盖投食、物理、行为状态、食物回收、约九分钟模拟和 13 项颜色设置；参考对照进一步比较抽样状态与场景几何。绘制检查还覆盖三档分辨率、深浅色切换、缓存释放和内存上限，并对照缓存与原始矢量绘制的逐像素结果和耗时。单帧绘制性能取决于设备，不代表整个应用的 CPU 占用。`verify-metal.sh` 在多个动画时刻对照实际 GPU 回读图像；`--benchmark` 使用同种子、置顶的大尺寸窗口和真实应用事件循环，每种渲染方式及主题预热一秒、测量八秒，并检查模拟和实际绘制帧数。CPU 百分比按进程全部线程的用户态及内核态 CPU 时间计算，100% 代表一个 CPU 核心；不含 WindowServer，也不代表 GPU 耗电。
 
 ### 发布
 
@@ -105,12 +111,14 @@ bash scripts/package-release.sh 1.0.2
 
 ### 实现
 
-- [`HamsterView.swift`](hamster-mac/HamsterView.swift)：绘制、输入、舞台坐标、偏好设置与 30 FPS 调度。
+- [`HamsterView.swift`](hamster-mac/HamsterView.swift)：输入、舞台坐标、偏好设置、30 FPS 调度与兼容绘制。
+- [`HamsterMetalRenderer.swift`](hamster-mac/HamsterMetalRenderer.swift)：按需提交 Metal 帧，使用模板缓冲处理填充、描边与水瓶遮罩，GPU 计算夜间光照。
+- [`MetalGeometry.hpp`](hamster-mac/Native/MetalGeometry.hpp)：场景路径三角形展开、静态网格缓存和绘制命令导出。
 - [`AppDelegate.swift`](hamster-mac/AppDelegate.swift)：应用生命周期与菜单栏控制。
 - [`HamsterEngine.cpp`](hamster-mac/Native/HamsterEngine.cpp)：原生场景模型、Core Graphics 绘制、计时器与对象回收。
 - [`Original.hpp`](hamster-mac/Native/Original.hpp)：参考算法的 C++ 转换结果，文件头保留源文件 SHA-256。
 
-物理使用固定 30 FPS 时间步，卡顿时最多追赶三帧；更新在主线程串行运行，引擎定期回收不可达对象。Core Graphics 与浏览器在字体和抗锯齿上可能存在栅格化差异。
+物理使用固定 30 FPS 时间步，卡顿时最多追赶三帧；更新在主线程串行运行，引擎定期回收不可达对象。Metal 默认使用四重多重采样抗锯齿（设备不支持时使用单采样），最多三个帧在途；没有独立的无限刷新循环，隐藏时停止提交并释放绘制表面。交互渲染不做像素回读或同步等待 GPU。可通过 `./run.sh --hamster-cpu-renderer` 强制使用 Core Graphics 诊断兼容问题。Core Graphics 回退路径中的静态背景和跑轮外框按实际像素尺寸缓存，缩放或切换主题时重建；两个缓存各限制为约 16 MiB，超大窗口回退到矢量绘制。节点绘制顺序仅在增删或交换层级时重新排序。窗口恢复显示时重新计时，不追赶隐藏期间的时间。Core Graphics 与浏览器在字体和抗锯齿上可能存在栅格化差异。
 
 参考算法更新后，可使用 Node.js 和 TypeScript 重新生成移植代码：
 
