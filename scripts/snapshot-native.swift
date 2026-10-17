@@ -35,13 +35,16 @@ import CoreText
             precondition(abs(window.frame.width - expected.width) < 1 && abs(window.frame.height - expected.height) < 1)
             precondition(contextMenu().item(at: 1)!.submenu!.item(at: index)!.state == .on)
             let restored = HamsterWindow(preferences: UserDefaults(suiteName: suiteName)!)
-            precondition(restored.frame.size == window.frame.size && restored.level == .normal)
+            precondition(abs(restored.frame.width - window.frame.width) < 1 &&
+                         abs(restored.frame.height - window.frame.height) < 1 && restored.level == .normal,
+                         "Restored \(restored.frame.size), expected \(window.frame.size)")
         }
         print("PASS: borderless focus, context menu pin/unpin, all size presets and menu selection states")
-        window.setContentSize(NSSize(width: 600, height: 600 * 550 / 742))
+        window.setContentSize(NSSize(width: 600, height: 600 * 212 / 282))
         contextMenu().performActionForItem(at: 0)
         let restored = HamsterWindow(preferences: UserDefaults(suiteName: suiteName)!)
-        precondition(restored.frame.size == window.frame.size && restored.level == .floating)
+        precondition(abs(restored.frame.width - window.frame.width) < 1 &&
+                     abs(restored.frame.height - window.frame.height) < 1 && restored.level == .floating)
         contextMenu().performActionForItem(at: 0)
         precondition(HamsterWindow(preferences: preferences).level == .normal)
         window.setContentSize(HamsterWindow.sizes[2].size)
@@ -64,16 +67,15 @@ import CoreText
         }
         // Exercise the actual NSView event handlers at two window scales.
         for width: CGFloat in [742, 375] {
-            view.setFrameSize(NSSize(width: width, height: 550))
-            let scale = width / 742
-            let top = (550 - 550 * scale) / 2
+            view.setFrameSize(NSSize(width: width, height: width * 212 / 282))
+            let scale = width / 282
             let initial = HamsterTestFoodCount()
-            view.mouseDown(with: mouse(.leftMouseDown, NSPoint(x: 500 * scale, y: top + 200 * scale)))
+            view.mouseDown(with: mouse(.leftMouseDown, NSPoint(x: 201 * scale, y: 81 * scale)))
             precondition(HamsterTestFoodCount() == initial + 1 && HamsterTestDragging() == 1)
-            view.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: 540 * scale, y: top + 150 * scale)))
+            view.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: 221 * scale, y: 61 * scale)))
             HamsterTestStep()
-            precondition(abs(HamsterTestFoodX() - (540 - 31) * 280 / 653) < 0.000_01)
-            view.mouseUp(with: mouse(.leftMouseUp, NSPoint(x: 540 * scale, y: top + 150 * scale)))
+            precondition(abs(HamsterTestFoodX() - 220) < 0.000_01)
+            view.mouseUp(with: mouse(.leftMouseUp, NSPoint(x: 221 * scale, y: 61 * scale)))
             precondition(HamsterTestDragging() == 0)
         }
         print("PASS: real AppKit NSEvents exercise feeding, dragging, release and scaled coordinate mapping")

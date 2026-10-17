@@ -8,9 +8,9 @@ final class HamsterWindow: NSWindow, NSWindowDelegate {
     private var savesSettings = false
 
     static let sizes: [(name: String, size: NSSize)] = [
-        ("小（50%）", NSSize(width: 371, height: 275)),
-        ("中（75%）", NSSize(width: 556.5, height: 412.5)),
-        ("大（100%）", NSSize(width: 742, height: 550))
+        ("小（50%）", NSSize(width: 371, height: 371 * 212 / 282)),
+        ("中（75%）", NSSize(width: 556.5, height: 556.5 * 212 / 282)),
+        ("大（100%）", NSSize(width: 742, height: 742 * 212 / 282))
     ]
 
     init(preferences: UserDefaults = .standard) {
@@ -18,18 +18,21 @@ final class HamsterWindow: NSWindow, NSWindowDelegate {
         let settings = preferences.dictionary(forKey: Self.settingsKey) ?? [:]
         var size = Self.sizes[2].size
         if let width = settings["width"] as? Double, let height = settings["height"] as? Double,
-           width.isFinite, height.isFinite, width >= 320, height >= 320 * 550 / 742,
-           abs(width / height - 742 / 550) < 0.01 {
-            size = NSSize(width: width, height: height)
+           width.isFinite, height.isFinite, width >= 320, height > 0 {
+            // Migrate the old padded ratio, preserving pixel-rounded sizes thereafter.
+            let restoredHeight = abs(width / height - 282 / 212) < 0.01 ? height : width * 212 / 282
+            size = NSSize(width: width, height: restoredHeight)
         }
         super.init(contentRect: NSRect(origin: .zero, size: size),
                    styleMask: [.borderless, .resizable, .miniaturizable, .closable],
                    backing: .buffered, defer: false)
         title = "Canvas 仓鼠"
-        minSize = NSSize(width: 320, height: 320 * 550 / 742)
-        contentAspectRatio = NSSize(width: 742, height: 550)
+        minSize = NSSize(width: 320, height: 320 * 212 / 282)
+        contentAspectRatio = NSSize(width: 282, height: 212)
         isReleasedWhenClosed = false
         isMovableByWindowBackground = false
+        isOpaque = false
+        backgroundColor = .clear
         level = settings["pinned"] as? Bool == true ? .floating : .normal
         delegate = self
         savesSettings = true
@@ -68,11 +71,11 @@ final class HamsterView: NSView {
     private var pressedAuthor = false
     private var authorFocused = false
     private var mouseTracking: NSTrackingArea?
-    private static let background = NSColor(srgbRed: 40 / 255, green: 40 / 255, blue: 40 / 255, alpha: 1)
+    private static let background = NSColor.white
     private static let authorURL = URL(string: "http://abowman.com/google-modules/hamster")!
 
     override var isFlipped: Bool { true }
-    override var isOpaque: Bool { true }
+    override var isOpaque: Bool { false }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -84,7 +87,7 @@ final class HamsterView: NSView {
         engine = HamsterEngineCreate(seed)!
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = Self.background.cgColor
+        layer?.backgroundColor = NSColor.clear.cgColor
         // Register the original author font once for the process.
         if let font = Bundle.main.url(forResource: "1_Icicle Country 2", withExtension: "ttf") {
             CTFontManagerRegisterFontsForURL(font as CFURL, .process, nil)
@@ -179,20 +182,16 @@ final class HamsterView: NSView {
     }
 
     private var canvasRect: NSRect {
-        let width = min(bounds.width, bounds.height * 742 / 550)
-        let height = width * 550 / 742
+        let width = min(bounds.width, bounds.height * 282 / 212)
+        let height = width * 212 / 282
         return NSRect(x: (bounds.width - width) / 2, y: (bounds.height - height) / 2, width: width, height: height)
     }
 
     private func canvasPoint(_ event: NSEvent) -> NSPoint {
         let point = convert(event.locationInWindow, from: nil)
         let rect = canvasRect
-        return NSPoint(x: (point.x - rect.minX) * 742 / rect.width,
-                       y: (point.y - rect.minY) * 550 / rect.height)
-    }
-
-    private func stagePoint(_ point: NSPoint) -> NSPoint {
-        NSPoint(x: (point.x - 31) * 280 / 653, y: (point.y - 25) * 210 / 490)
+        return NSPoint(x: (point.x - rect.minX) * 282 / rect.width - 1,
+                       y: (point.y - rect.minY) * 212 / rect.height - 1)
     }
 
     private func isInStage(_ point: NSPoint) -> Bool {
@@ -200,37 +199,32 @@ final class HamsterView: NSView {
     }
 
     private var authorRect: NSRect {
-        NSRect(x: 31 + 220 * 653 / 280, y: 25 + 490 / 210, width: 56 * 653 / 280, height: 14 * 490 / 210)
+        NSRect(x: 220, y: 1, width: 56, height: 14)
+    }
+
+    private var windowDragRect: NSRect {
+        NSRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: min(28, bounds.height))
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        Self.background.setFill()
-        bounds.fill()
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let rect = canvasRect
         context.saveGState()
-        context.translateBy(x: rect.minX, y: rect.minY)
-        context.scaleBy(x: rect.width / 742, y: rect.width / 742)
-        let rim = CGPath(roundedRect: CGRect(x: 9, y: 9, width: 698, height: 523), cornerWidth: 12, cornerHeight: 12, transform: nil)
-        context.addPath(rim)
-        context.setFillColor(NSColor.white.cgColor)
-        context.fillPath()
-        context.addPath(rim)
-        context.setStrokeColor(NSColor(srgbRed: 183 / 255, green: 183 / 255, blue: 183 / 255, alpha: 1).cgColor)
-        context.setLineWidth(2)
-        context.setLineDash(phase: 0, lengths: [5, 4])
-        context.strokePath()
-        context.setLineDash(phase: 0, lengths: [])
-        context.clip(to: CGRect(x: 30, y: 24, width: 655, height: 492))
-        context.translateBy(x: 31, y: 25)
-        context.scaleBy(x: 653 / 280, y: 490 / 210)
+        let scale = rect.width / 282
+        let outline = CGPath(roundedRect: rect, cornerWidth: 6 * scale, cornerHeight: 6 * scale, transform: nil)
+        context.addPath(outline)
+        context.clip()
+        Self.background.setFill()
+        bounds.fill()
+        context.translateBy(x: rect.minX + scale, y: rect.minY + scale)
+        context.scaleBy(x: scale, y: scale)
         HamsterEngineDraw(engine, context)
         context.restoreGState()
         if authorFocused && window?.firstResponder === self {
             let focus = authorRect.insetBy(dx: -2, dy: -2)
             context.saveGState()
-            context.translateBy(x: rect.minX, y: rect.minY)
-            context.scaleBy(x: rect.width / 742, y: rect.width / 742)
+            context.translateBy(x: rect.minX + scale, y: rect.minY + scale)
+            context.scaleBy(x: scale, y: scale)
             context.setStrokeColor(NSColor.keyboardFocusIndicatorColor.cgColor)
             context.setLineWidth(2)
             context.stroke(focus)
@@ -302,10 +296,15 @@ final class HamsterView: NSView {
     override func resetCursorRects() {
         super.resetCursorRects()
         let rect = canvasRect
-        let scale = rect.width / 742
+        let scale = rect.width / 282
         let author = authorRect
-        addCursorRect(NSRect(x: rect.minX + author.minX * scale, y: rect.minY + author.minY * scale, width: author.width * scale, height: author.height * scale), cursor: .pointingHand)
-        addCursorRect(NSRect(x: rect.minX + (31 + 157 * 653 / 280) * scale, y: rect.minY + (25 + 95 * 490 / 210) * scale, width: 20 * 653 / 280 * scale, height: 20 * 490 / 210 * scale), cursor: .pointingHand)
+        let contentRect = NSRect(x: bounds.minX, y: windowDragRect.maxY, width: bounds.width,
+                                 height: max(0, bounds.maxY - windowDragRect.maxY))
+        let authorCursor = NSRect(x: rect.minX + (author.minX + 1) * scale, y: rect.minY + (author.minY + 1) * scale,
+                                  width: author.width * scale, height: author.height * scale).intersection(contentRect)
+        if !authorCursor.isEmpty { addCursorRect(authorCursor, cursor: .pointingHand) }
+        addCursorRect(NSRect(x: rect.minX + 158 * scale, y: rect.minY + 96 * scale, width: 20 * scale, height: 20 * scale), cursor: .pointingHand)
+        addCursorRect(windowDragRect, cursor: .openHand)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -321,7 +320,7 @@ final class HamsterView: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         let canvas = canvasPoint(event)
-        let point = stagePoint(canvas)
+        let point = canvas
         if isInStage(point) && !authorRect.contains(canvas) { HamsterEngineMouse(engine, point.x, point.y, 0) }
     }
     override func mouseDown(with event: NSEvent) {
@@ -330,11 +329,17 @@ final class HamsterView: NSView {
             return
         }
         window?.makeFirstResponder(self)
+        let location = convert(event.locationInWindow, from: nil)
+        if windowDragRect.contains(location) || !bounds.insetBy(dx: 6, dy: 6).contains(location) {
+            releaseFood()
+            window?.performDrag(with: event)
+            return
+        }
         let canvas = canvasPoint(event)
         pressedAuthor = authorRect.contains(canvas)
         authorFocused = false
         if pressedAuthor { return }
-        let point = stagePoint(canvas)
+        let point = canvas
         if isInStage(point) {
             draggingFood = true
             HamsterEngineMouse(engine, point.x, point.y, 1)
@@ -344,7 +349,7 @@ final class HamsterView: NSView {
     }
     override func mouseDragged(with event: NSEvent) {
         guard draggingFood else { return }
-        let point = stagePoint(canvasPoint(event))
+        let point = canvasPoint(event)
         HamsterEngineMouse(engine, point.x, point.y, 0)
     }
     override func mouseUp(with event: NSEvent) {
