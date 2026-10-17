@@ -62,6 +62,9 @@ struct HamsterCanvas: NSViewRepresentable {
 /// AppKit input and Core Graphics rendering, with no browser or script runtime.
 final class HamsterView: NSView {
     private let engine: UnsafeMutableRawPointer
+    private let preferences: UserDefaults
+    private static let watermarkKey = "hamster.showsWatermark"
+    private var showsWatermark = true
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
     private var previousTime = ProcessInfo.processInfo.systemUptime
@@ -83,7 +86,8 @@ final class HamsterView: NSView {
         self.init(frame: frameRect, seed: UInt32.random(in: .min ... .max))
     }
 
-    init(frame frameRect: NSRect, seed: UInt32) {
+    init(frame frameRect: NSRect, seed: UInt32, preferences: UserDefaults = .standard) {
+        self.preferences = preferences
         engine = HamsterEngineCreate(seed)!
         super.init(frame: frameRect)
         wantsLayer = true
@@ -97,13 +101,23 @@ final class HamsterView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
         setAccessibilityLabel("宠物仓鼠")
-        setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "访问原作者 aBowman 的仓鼠页面", handler: {
-            NSWorkspace.shared.open(Self.authorURL)
-        })])
+        showsWatermark = preferences.object(forKey: Self.watermarkKey) as? Bool ?? true
+        updateWatermark()
         setAccessibilityHelp("点击空白处投食，按住拖动或抛出食物；点击黄色轮心让仓鼠上跑轮。移动鼠标可唤醒仓鼠。")
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    private func updateWatermark() {
+        HamsterEngineSetWatermarkVisible(engine, showsWatermark ? 1 : 0)
+        authorFocused = false
+        pressedAuthor = false
+        setAccessibilityCustomActions(showsWatermark ? [NSAccessibilityCustomAction(name: "访问原作者 aBowman 的仓鼠页面", handler: {
+            NSWorkspace.shared.open(Self.authorURL)
+        })] : [])
+        window?.invalidateCursorRects(for: self)
+        needsDisplay = true
+    }
 
     deinit {
         timer?.invalidate()
@@ -253,6 +267,9 @@ final class HamsterView: NSView {
             }
         }
         menu.addItem(withTitle: "窗口大小", action: nil, keyEquivalent: "").submenu = sizeMenu
+        let watermark = menu.addItem(withTitle: "显示水印", action: #selector(toggleWatermark(_:)), keyEquivalent: "")
+        watermark.target = self
+        watermark.state = showsWatermark ? .on : .off
         menu.addItem(.separator())
         let close = menu.addItem(withTitle: "关闭窗口", action: #selector(closeWindow(_:)), keyEquivalent: "")
         close.target = self
@@ -262,6 +279,12 @@ final class HamsterView: NSView {
     @objc private func toggleOnTop(_ sender: NSMenuItem) {
         guard let window else { return }
         window.level = window.level == .floating ? .normal : .floating
+    }
+
+    @objc private func toggleWatermark(_ sender: NSMenuItem) {
+        showsWatermark.toggle()
+        preferences.set(showsWatermark, forKey: Self.watermarkKey)
+        updateWatermark()
     }
 
     @objc private func changeWindowSize(_ sender: NSMenuItem) {
@@ -302,13 +325,13 @@ final class HamsterView: NSView {
                                  height: max(0, bounds.maxY - windowDragRect.maxY))
         let authorCursor = NSRect(x: rect.minX + (author.minX + 1) * scale, y: rect.minY + (author.minY + 1) * scale,
                                   width: author.width * scale, height: author.height * scale).intersection(contentRect)
-        if !authorCursor.isEmpty { addCursorRect(authorCursor, cursor: .pointingHand) }
+        if showsWatermark && !authorCursor.isEmpty { addCursorRect(authorCursor, cursor: .pointingHand) }
         addCursorRect(NSRect(x: rect.minX + 158 * scale, y: rect.minY + 96 * scale, width: 20 * scale, height: 20 * scale), cursor: .pointingHand)
         addCursorRect(windowDragRect, cursor: .openHand)
     }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 48 {
+        if showsWatermark && event.keyCode == 48 {
             authorFocused.toggle()
             needsDisplay = true
         } else if authorFocused && (event.keyCode == 36 || event.keyCode == 49) {
@@ -321,7 +344,7 @@ final class HamsterView: NSView {
     override func mouseMoved(with event: NSEvent) {
         let canvas = canvasPoint(event)
         let point = canvas
-        if isInStage(point) && !authorRect.contains(canvas) { HamsterEngineMouse(engine, point.x, point.y, 0) }
+        if isInStage(point) && !(showsWatermark && authorRect.contains(canvas)) { HamsterEngineMouse(engine, point.x, point.y, 0) }
     }
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) {
@@ -336,7 +359,7 @@ final class HamsterView: NSView {
             return
         }
         let canvas = canvasPoint(event)
-        pressedAuthor = authorRect.contains(canvas)
+        pressedAuthor = showsWatermark && authorRect.contains(canvas)
         authorFocused = false
         if pressedAuthor { return }
         let point = canvas

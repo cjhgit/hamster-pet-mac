@@ -9,6 +9,7 @@ void *HamsterEngineCreate(uint32_t seed);
 void HamsterEngineDestroy(void *engine);
 void HamsterEngineSetColor(void *engine, const char *name, uint32_t color);
 void HamsterEngineStart(void *engine);
+void HamsterEngineSetWatermarkVisible(void *engine, int visible);
 void HamsterEngineStep(void *engine, double elapsedMilliseconds);
 void HamsterEngineMouse(void *engine, double x, double y, int action);
 void HamsterEngineDraw(void *engine, CGContextRef context);

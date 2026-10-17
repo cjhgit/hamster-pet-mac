@@ -8,10 +8,10 @@ import CoreText
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let font = root.appendingPathComponent("hamster-mac/Resources/1_Icicle Country 2.ttf")
         CTFontManagerRegisterFontsForURL(font as CFURL, .process, nil)
-        let view = HamsterView(frame: NSRect(x: 0, y: 0, width: 742, height: 550), seed: 11042)
         let suiteName = "hamster.snapshot.\(UUID().uuidString)"
         let preferences = UserDefaults(suiteName: suiteName)!
         defer { preferences.removePersistentDomain(forName: suiteName) }
+        let view = HamsterView(frame: NSRect(x: 0, y: 0, width: 742, height: 550), seed: 11042, preferences: preferences)
         let window = HamsterWindow(preferences: preferences)
         window.contentView = view
         precondition(!window.styleMask.contains(.titled) && window.canBecomeKey && window.canBecomeMain)
@@ -79,5 +79,19 @@ import CoreText
             precondition(HamsterTestDragging() == 0)
         }
         print("PASS: real AppKit NSEvents exercise feeding, dragging, release and scaled coordinate mapping")
+        precondition(contextMenu().item(at: 2)!.state == .on && HamsterTestWatermarkVisible() == 1)
+        contextMenu().performActionForItem(at: 2)
+        precondition(contextMenu().item(at: 2)!.state == .off && HamsterTestWatermarkVisible() == 0)
+        view.setFrameSize(window.frame.size)
+        let hidden = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+        view.cacheDisplay(in: view.bounds, to: hidden)
+        try hidden.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "/private/tmp/hamster-native-no-watermark.png"))
+        let restoredView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!)
+        precondition(HamsterTestWatermarkVisible() == 0 && restoredView.menu(for: contextEvent)!.item(at: 2)!.state == .off)
+        contextMenu().performActionForItem(at: 2)
+        precondition(HamsterTestWatermarkVisible() == 1)
+        let visibleView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!)
+        precondition(HamsterTestWatermarkVisible() == 1 && visibleView.menu(for: contextEvent)!.item(at: 2)!.state == .on)
+        print("PASS: watermark visibility toggles in engine and persists when hidden or shown")
     }
 }

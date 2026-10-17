@@ -321,6 +321,7 @@ void *HamsterEngineCreate(uint32_t seed){auto *engine=new Engine(seed);E=engine;
 void HamsterEngineDestroy(void *engine){delete static_cast<Engine*>(engine);if(E==engine)E=nullptr;}
 void HamsterEngineSetColor(void *engine,const char *name,uint32_t color){E=static_cast<Engine*>(engine);char hex[7];snprintf(hex,sizeof(hex),"%06X",color&0xffffff);R(E->root,E->key(std::string("up_")+name))=string(hex);}
 void HamsterEngineStart(void *engine){E=static_cast<Engine*>(engine);initializeTimeline(E->root,{});HamsterEngineStep(engine,0);E->collect();}
+void HamsterEngineSetWatermarkVisible(void *engine,int visible){E=static_cast<Engine*>(engine);R(G(E->root,P_txt),P__visible)=V(visible!=0);}
 void HamsterEngineStep(void *engine,double elapsed){E=static_cast<Engine*>(engine);advance(std::max(0.0,elapsed));call(E->root,P_onEnterFrame,{});call(G(E->root,P_ham),P_onEnterFrame,{});if(++E->frames%30==0)E->collect();}
 void HamsterEngineMouse(void *engine,double x,double y,int action){E=static_cast<Engine*>(engine);if(action!=2){R(E->root,P__xmouse)=V(x);R(E->root,P__ymouse)=V(y);}if(action==0)call(E->root,P_onMouseMove,{});if(action==1){call(E->root,P_onMouseMove,{});call(E->root,P_onMouseDown,{});}if(action==2)call(E->root,P_onMouseUp,{});}
 void HamsterEngineDraw(void *engine,CGContextRef ctx){
