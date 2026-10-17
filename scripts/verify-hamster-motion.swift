@@ -20,19 +20,9 @@ import UniformTypeIdentifiers
             try bitmap.representation(using: .png, properties: [:])!.write(to: path)
         }
         func skinVertices(_ renderer: Hamster3DScene) -> [SIMD3<Float>] {
-            let skin = renderer.hamster.childNode(withName: "Hamster deforming skin", recursively: true)!
-            let source = skin.geometry!.sources(for: .vertex).first!
-            precondition(source.bytesPerComponent == 4 && source.componentsPerVector == 3)
-            return source.data.withUnsafeBytes { bytes in
-                (0..<source.vectorCount).map { i in
-                    let offset = source.dataOffset + i * source.dataStride
-                    let point = SIMD3<Float>(bytes.loadUnaligned(fromByteOffset: offset, as: Float.self),
-                                             bytes.loadUnaligned(fromByteOffset: offset + 4, as: Float.self),
-                                             bytes.loadUnaligned(fromByteOffset: offset + 8, as: Float.self))
-                    precondition(point.x.isFinite && point.y.isFinite && point.z.isFinite)
-                    return point
-                }
-            }
+            let vertices = renderer.hamsterBodyVertices
+            precondition(!vertices.isEmpty && vertices.allSatisfy { $0.x.isFinite && $0.y.isFinite && $0.z.isFinite })
+            return vertices
         }
         let scenarios: [(String, Int32, Double)] = [
             ("idle-front", 0, .pi / 2), ("idle-side", 0, 0),
@@ -46,6 +36,8 @@ import UniformTypeIdentifiers
         for (name, scenario, heading) in scenarios {
             let view = HamsterView(frame: .init(x: 0, y: 0, width: 800, height: 600), seed: 11042, preferences: preferences)
             let renderer = view.scene3D!
+            let expectedBackend = ProcessInfo.processInfo.arguments.contains("--hamster-cpu-body") ? "CPU" : "Metal compute"
+            precondition(renderer.bodyMeshingBackend == expectedBackend, "Unexpected body backend: \(renderer.bodyMeshingBackend)")
             HamsterTestConfigureScenario(scenario, heading)
             let directory = output.appendingPathComponent(name, isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -71,6 +63,7 @@ import UniformTypeIdentifiers
                     HamsterTestStep()
                     let updateStart = ProcessInfo.processInfo.systemUptime
                     renderer.update(night: false)
+                    precondition(renderer.bodyMeshingBackend == expectedBackend, "GPU body must not silently fall back")
                     updateTimes.append((ProcessInfo.processInfo.systemUptime - updateStart) * 1000)
                     renderer.inspectHamster()
                     let state = HamsterEngineGetSceneStateForTest()

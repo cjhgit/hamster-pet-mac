@@ -26,9 +26,23 @@ HamsterRigPoint HamsterEngineGetRigPoint(void *engine, int index);
 // Original quadratic feature contours in 3D: eyes 0/1, ears 2/3.
 int HamsterEngineGetRigFeatureCount(void *engine, int feature);
 HamsterRigPoint HamsterEngineGetRigFeaturePoint(void *engine, int feature, int index);
+// Same feature controls in the head node's local (+Y up) coordinates, avoiding
+// a world transform followed by an inverse transform for every control point.
+HamsterRigPoint HamsterEngineGetRigFeatureLocalPoint(void *engine, int feature, int index);
 typedef struct { float x,y,z,nx,ny,nz,u,v; } HamsterBodyVertex;
-typedef struct { const HamsterBodyVertex *vertices; uint32_t vertexCount, generation; } HamsterBodyMesh;
+// Indexed, welded skin. Both buffers belong to the engine and remain valid
+// until its next body mesh build or destruction.
+typedef struct {
+    const HamsterBodyVertex *vertices;
+    uint32_t vertexCount, generation;
+    const uint32_t *indices;
+    uint32_t indexCount;
+} HamsterBodyMesh;
 HamsterBodyMesh HamsterEngineBuildBodyMesh(void *engine);
+// Compact field description for Metal meshing: ten float4 constants followed
+// by 257 torso and 257 head sections. No lattice or triangles built on the CPU.
+typedef struct { const float *values; uint32_t floatCount, generation; } HamsterBodyField;
+HamsterBodyField HamsterEngineBuildBodyField(void *engine);
 typedef struct { double x, y, radius; int visible; } HamsterSceneFood;
 HamsterSceneState HamsterEngineGetSceneState(void *engine);
 uint32_t HamsterEngineGetSceneColor(void *engine, const char *name);

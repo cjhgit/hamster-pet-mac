@@ -1,12 +1,14 @@
 import AppKit
 import SceneKit
 import simd
+import Metal
+import MetalKit
 
 /// All visible objects are closed, shaded meshes in world space. No sprites or billboards.
 /// Units match the original 280 × 210 scene; +Y is up and the hamster faces +Z locally.
 @MainActor final class Hamster3DScene {
     let scene = SCNScene()
-    let view = SCNView(frame: .zero, options: [SCNView.Option.preferredRenderingAPI.rawValue: SCNRenderingAPI.metal.rawValue])
+    let view = Hamster3DRenderView()
     let camera = SCNNode()
     let hamster = SCNNode()
     private var model: HamsterDeformableModel!
@@ -17,12 +19,14 @@ import simd
     private let keyLight = SCNNode()
     private var foods: [SCNNode] = []
     private var palette: [String: NSColor] = [:]
+    private struct MaterialKey: Hashable { let rgba: SIMD4<Double>; let unlit: Bool; let cull: Int }
+    private var materialCache: [MaterialKey: SCNMaterial] = [:]
     private let ink = NSColor(srgbRed: 0.10, green: 0.10, blue: 0.08, alpha: 1)
     private(set) var yaw: Float = 0
     private(set) var pitch: Float = 0
     private(set) var zoom: Float = 1
     private var target = SIMD3<Float>(0, 105, 0)
-    private var night = false
+    private var night: Bool?
     private var follow = false
     private var hamsterDepth: Float = 42
     private var lastPoseFrame: Int?
@@ -39,12 +43,6 @@ import simd
         scene.background.contents = color("bgColor")
         view.scene = scene
         view.backgroundColor = color("bgColor")
-        view.antialiasingMode = .multisampling4X
-        view.autoenablesDefaultLighting = false
-        view.allowsCameraControl = false
-        view.isPlaying = false
-        view.rendersContinuously = false
-        view.preferredFramesPerSecond = 30
         view.wantsLayer = true
         view.layer?.masksToBounds = true
         camera.name = "Orbit camera"
@@ -78,14 +76,40 @@ import simd
     }
 
     private func color(_ key: String) -> NSColor { palette[key] ?? .white }
-    private func material(_ color: NSColor, unlit: Bool = false) -> SCNMaterial {
+    private func material(_ color: NSColor, unlit: Bool = false, cull: SCNCullMode = .back) -> SCNMaterial {
+        let rgb = color.usingColorSpace(.extendedSRGB)!
+        let key = MaterialKey(rgba: .init(rgb.redComponent, rgb.greenComponent, rgb.blueComponent, rgb.alphaComponent), unlit: unlit, cull: cull.rawValue)
+        if let existing = materialCache[key] { return existing }
         let m = SCNMaterial()
         m.diffuse.contents = color
         m.lightingModel = unlit ? .constant : .lambert
         m.ambient.contents = color
         m.specular.contents = NSColor.black
         m.roughness.contents = 0.95
+        m.cullMode = cull
+        materialCache[key] = m
         return m
+    }
+
+    private func flattenGeometry(in parent: SCNNode, excluding: [SCNNode] = []) {
+        guard !CommandLine.arguments.contains("--hamster-unflattened") else { return }
+        func hasOutline(_ node: SCNNode) -> Bool {
+            node.geometry?.materials.contains(where: { $0.cullMode == .front }) == true || node.childNodes.contains(where: hasOutline)
+        }
+        // SceneKit's flattening changes inverted-hull ordering when an outline
+        // and its covered skin share the combined geometry. Keep those solid
+        // objects intact, and batch only ordinary back-face-culled geometry.
+        let children = parent.childNodes.filter { child in
+            child.light == nil && !excluding.contains(where: { $0 === child }) && !hasOutline(child)
+        }
+        guard children.count > 1 else { return }
+        let group = SCNNode()
+        // Use an identity temporary root: bake only local child transforms,
+        // retaining the parent's animation and independently controlled lights.
+        for child in children { group.addChildNode(child) }
+        let flattened = group.flattenedClone()
+        flattened.name = "\(parent.name ?? "Scene") combined static geometry"
+        parent.addChildNode(flattened)
     }
 
     @discardableResult private func mesh(_ geometry: SCNGeometry, color: NSColor, name: String,
@@ -99,8 +123,7 @@ import simd
         if outline > 0 {
             // Inverted hull: real back-facing geometry, so silhouettes work at every camera angle.
             let hullGeometry = geometry.copy() as! SCNGeometry
-            let hullMaterial = material(ink, unlit: true)
-            hullMaterial.cullMode = .front
+            let hullMaterial = material(ink, unlit: true, cull: .front)
             hullGeometry.materials = [hullMaterial]
             let hull = SCNNode(geometry: hullGeometry)
             hull.name = "\(name) · outline"
@@ -139,7 +162,9 @@ import simd
     }
 
     private func buildHabitat() {
-        let root = scene.rootNode
+        let root = SCNNode()
+        root.name = "Habitat"
+        scene.rootNode.addChildNode(root)
         _ = box(SCNVector3(282, 3, 138), radius: 1.5, color: ink, name: "Habitat base rim", parent: root, at: SCNVector3(0, -2, 0), outline: 0)
         _ = box(SCNVector3(278, 1, 134), radius: 0.4, color: color("bgColor"), name: "Habitat floor", parent: root, at: SCNVector3(0, 0, 0), outline: 0)
         // A closed, extruded rounded frame preserves the original silhouette.
@@ -149,6 +174,7 @@ import simd
         let frameGeometry = SCNShape(path: framePath, extrusionDepth: 1.8)
         frameGeometry.chamferRadius = 0.2
         _ = mesh(frameGeometry, color: ink, name: "Rounded habitat rear frame", parent: root, at: .init(0, 0, -64))
+        flattenGeometry(in: root)
     }
 
     private func ring(radius: CGFloat, tube: CGFloat, color: NSColor, name: String, z: CGFloat, parent: SCNNode) {
@@ -179,7 +205,9 @@ import simd
         }
         let geo = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices), SCNGeometrySource(normals: normals)],
                               elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
-        geo.firstMaterial = material(color("wheelColor"))
+        // Double-sided tread is a distinct render state, not a mutation of the
+        // cached material used elsewhere when the user chooses equal colors.
+        geo.firstMaterial = material(color("wheelColor")).copy() as? SCNMaterial
         geo.firstMaterial?.isDoubleSided = true
         return geo
     }
@@ -211,6 +239,8 @@ import simd
             node.eulerAngles.x = .pi / 2
         }
         rod(SCNVector3(0, 0, -36), SCNVector3(0, 0, 26), radius: 2, color: ink, name: "Wheel axle", parent: support)
+        flattenGeometry(in: wheel)
+        flattenGeometry(in: support, excluding: [wheel])
     }
 
     private func buildBottle() {
@@ -229,6 +259,7 @@ import simd
         for y: CGFloat in [-42, 42] {
             _ = box(.init(57, 3, 3), radius: 1, color: ink, name: "Bottle rear clip", parent: bottle, at: .init(0, y, -15), outline: 0)
         }
+        flattenGeometry(in: bottle)
     }
 
     private func buildLamp() {
@@ -241,6 +272,7 @@ import simd
         let lip = SCNTorus(ringRadius: 10.5, pipeRadius: 0.5)
         _ = mesh(lip, color: NSColor(srgbRed: 0.71, green: 0.55, blue: 0.32, alpha: 1), name: "Lamp lip", parent: lamp, at: .init(0, -4, 0))
         let bulb = ellipsoid(.init(4, 3.2, 4), color: NSColor(srgbRed: 1, green: 0.86, blue: 0.56, alpha: 1), name: "Lamp bulb", parent: lamp, at: .init(0, -5, 0), outline: 0)
+        bulb.geometry?.firstMaterial = bulb.geometry?.firstMaterial?.copy() as? SCNMaterial
         bulb.geometry?.firstMaterial?.emission.contents = NSColor(srgbRed: 1, green: 0.65, blue: 0.20, alpha: 1)
         bulbLight.name = "Warm bulb light"
         bulbLight.light = SCNLight()
@@ -251,17 +283,19 @@ import simd
         bulbLight.light?.attenuationEndDistance = 300
         bulbLight.position = .init(0, -10, 0)
         lamp.addChildNode(bulbLight)
+        flattenGeometry(in: lamp)
     }
 
     private func buildHamster() {
         hamster.name = "Hamster"
         scene.rootNode.addChildNode(hamster)
-        model = HamsterDeformableModel(engine: engine, colors: palette)
+        model = HamsterDeformableModel(engine: engine, colors: palette, device: view.device)
         hamster.addChildNode(model.root)
     }
 
     func update(night: Bool) {
         let state = HamsterEngineGetSceneState(engine)
+        var changed = false
         SCNTransaction.begin()
         SCNTransaction.disableActions = true
         let x = Float(state.x) - 140
@@ -271,33 +305,56 @@ import simd
             hamsterDepth += ((state.onWheel != 0 ? -24 : 42) - hamsterDepth) * 0.18
             lastPoseFrame = poseFrame
         }
-        hamster.position = .init(CGFloat(x), 210 - state.y, CGFloat(hamsterDepth))
-        hamster.eulerAngles.z = CGFloat(-state.rotation * .pi / 180)
+        let position = SCNVector3(CGFloat(x), 210 - state.y, CGFloat(hamsterDepth))
+        if simd_distance_squared(hamster.simdPosition, SIMD3<Float>(Float(position.x), Float(position.y), Float(position.z))) > 0.0005 * 0.0005 {
+            hamster.position = position
+            changed = true
+        }
+        let rotation = CGFloat(-state.rotation * .pi / 180)
+        if abs(hamster.eulerAngles.z - rotation) > 0.000005 {
+            hamster.eulerAngles.z = rotation
+            changed = true
+        }
+        let revision = model.geometryRevision
         model.update()
-        wheel.eulerAngles.z = CGFloat(-state.wheelAngle)
+        changed = changed || revision != model.geometryRevision
+        let wheelAngle = CGFloat(-state.wheelAngle)
+        if abs(wheel.eulerAngles.z - wheelAngle) > 0.000005 {
+            wheel.eulerAngles.z = wheelAngle
+            changed = true
+        }
         let count = HamsterEngineGetSceneFoodCount(engine)
         while foods.count < count {
             foods.append(ellipsoid(.init(1, 1, 1), color: color("foodColor"), name: "Food pellet", parent: scene.rootNode, at: .init(0, 0, 0), outline: 0.12))
+            changed = true
         }
         for (i, node) in foods.enumerated() {
-            guard i < count else { node.isHidden = true; continue }
+            guard i < count else {
+                if !node.isHidden { node.isHidden = true; changed = true }
+                continue
+            }
             let food = HamsterEngineGetSceneFood(engine, Int32(i))
-            node.isHidden = food.visible == 0
-            node.position = .init(food.x - 140, 210 - food.y, 42)
-            node.scale = .init(food.radius, food.radius, food.radius)
+            let hidden = food.visible == 0
+            if node.isHidden != hidden { node.isHidden = hidden; changed = true }
+            if !hidden {
+                let p = SCNVector3(food.x - 140, 210 - food.y, 42), scale = SCNVector3(food.radius, food.radius, food.radius)
+                if node.position.x != p.x || node.position.y != p.y || node.position.z != p.z { node.position = p; changed = true }
+                if node.scale.x != scale.x { node.scale = scale; changed = true }
+            }
         }
         if self.night != night {
             self.night = night
             scene.background.contents = night ? NSColor(srgbRed: 0.10, green: 0.13, blue: 0.18, alpha: 1) : color("bgColor")
             view.backgroundColor = scene.background.contents as? NSColor ?? .white
+            lamp.isHidden = !night
+            ambient.light?.intensity = night ? 430 : 850
+            ambient.light?.color = night ? NSColor(srgbRed: 0.70, green: 0.78, blue: 0.95, alpha: 1) : .white
+            keyLight.light?.intensity = night ? 180 : 150
+            changed = true
         }
-        lamp.isHidden = !night
-        ambient.light?.intensity = night ? 430 : 850
-        ambient.light?.color = night ? NSColor(srgbRed: 0.70, green: 0.78, blue: 0.95, alpha: 1) : .white
-        keyLight.light?.intensity = night ? 180 : 150
-        if follow { target = focusPoint; updateCamera() }
+        if follow && simd_distance_squared(target, focusPoint) > 0.0005 * 0.0005 { target = focusPoint; updateCamera() }
         SCNTransaction.commit()
-        view.needsDisplay = true
+        if changed { view.presentFrame() }
     }
 
     private var focusPoint: SIMD3<Float> {
@@ -307,6 +364,9 @@ import simd
     }
 
     var hamsterLandmarks: [SIMD3<Float>] { model.landmarks }
+    var hamsterBodyVertices: [SIMD3<Float>] { model.bodyPositionsForInspection }
+    var bodyMeshingBackend: String { model.bodyMeshingBackend }
+    var bodyGPUSeconds: Double { model.bodyGPUSeconds }
     var inspectionCenter: SIMD3<Float> { focusPoint }
     func inspectHamster(yaw: Float = 0, pitch: Float = 0, zoom: Float = 2.1) {
         follow = true
@@ -356,9 +416,13 @@ import simd
         let aspect = max(0.1, view.bounds.width / max(1, view.bounds.height))
         camera.camera?.orthographicScale = Double(max(218, 290 / aspect) * 0.5 / CGFloat(zoom))
         SCNTransaction.commit()
-        view.needsDisplay = true
+        view.invalidateFrame()
     }
-    func resize(_ frame: NSRect) { view.frame = frame; updateCamera() }
+    func resize(_ frame: NSRect) {
+        guard view.frame != frame else { return }
+        view.frame = frame
+        updateCamera()
+    }
 
     /// Ray/plane projection keeps feeding attached to world coordinates after orbiting.
     func stagePoint(_ point: NSPoint) -> NSPoint? {
@@ -394,7 +458,16 @@ import simd
     }
 
     func hitsWheel(_ point: NSPoint) -> Bool {
-        view.hitTest(point, options: nil).first.map { hit in
+        let halfHeight = Float(camera.camera?.orthographicScale ?? 109)
+        let width = Float(max(1, view.bounds.width)), height = Float(max(1, view.bounds.height))
+        let x = (Float(point.x) / width - 0.5) * 2 * halfHeight * width / height
+        let y = (Float(point.y) / height - 0.5) * 2 * halfHeight
+        let origin = camera.simdPosition + camera.simdWorldRight * x + camera.simdWorldUp * y
+        let end = origin + camera.simdWorldFront * Float(camera.camera?.zFar ?? 2500)
+        let hits = scene.rootNode.hitTestWithSegment(from: .init(origin.x, origin.y, origin.z), to: .init(end.x, end.y, end.z),
+                                                    options: [SCNHitTestOption.searchMode.rawValue: SCNHitTestSearchMode.closest.rawValue,
+                                                              SCNHitTestOption.ignoreHiddenNodes.rawValue: true])
+        return hits.first.map { hit in
             var node: SCNNode? = hit.node
             while let current = node {
                 if current.name == "wheelHub" { return true }
@@ -405,10 +478,8 @@ import simd
     }
 
     func snapshot(size: CGSize) -> NSImage {
-        let renderer = SCNRenderer(device: view.device, options: nil)
-        renderer.scene = scene
-        renderer.pointOfView = camera
-        return renderer.snapshot(atTime: 0, with: size, antialiasingMode: .multisampling4X)
+        if let image = view.image(size: size) { return image }
+        preconditionFailure("Unable to render 3D inspection image")
     }
 
 }

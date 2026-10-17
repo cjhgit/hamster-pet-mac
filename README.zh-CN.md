@@ -26,7 +26,19 @@
 
 构建运行：`./run.sh`。专门验证三维网格、视角、投影和输入：`bash scripts/verify-3d.sh`，截图位于 `/private/tmp/hamster-3d/`。原有二维绘制器作为独立回归路径保留。
 
-`bash scripts/verify-playback.sh` 验证实际窗口中的播放按钮、快捷键、逐帧、暂停时的姿态和输入冻结，以及切换主题、调整窗口、隐藏再显示和恢复计时。
+`bash scripts/verify-playback.sh` 验证实际窗口中的播放按钮、快捷键、逐帧、暂停时的姿态和输入冻结，以及切换主题、调整窗口、隐藏再显示、屏幕休眠、会话切换和恢复计时。
+
+3D 性能：躯干和头部融合曲面的场采样、共享边求交、三角化、邻接平滑、法线与毛色坐标均由 Metal 计算着色器完成。CPU 只提供身体截面和姿态参数，SceneKit 直接使用 GPU 生成的顶点及索引缓冲。每帧的输出缓冲在交给 SceneKit 后保持不变，避免绘制期间改写；提交前等待计算完成并读取少量计数，不回读顶点或画面。设备不支持或计算失败时自动回退到原有 CPU 曲面，可用 `./run.sh --hamster-cpu-body` 强制该路径诊断。
+
+黑色描边在 GPU 顶点阶段扩张并共享皮肤数据。四肢、脚掌、尾巴和嘴部按材质合并提交，仍保留各自的形变、法线和描边宽度。合批顶点直接写入共享 Metal 缓冲，三个属性源与黑色描边共用一份不可变输出，省去 SceneKit 的逐属性上传；三角形索引、圆周采样、腿部角度权重和固定头部截面复用缓存。眼睛和耳缘直接读取头部局部控制点，位移交给节点变换，眨眼仍保留形变。普通静态场景网格合并；有反面描边的对象保留原层级和遮挡。Apple GPU 的输出缓冲优先使用有固定容量的 Metal 堆，每帧资源仍保持独立，不覆盖绘制中的旧帧；不支持或容量不足时使用独立缓冲。
+
+姿态未变时复用曲面，场景按需重绘；叠加层仅在尺寸、缩放、主题或播放状态变化时更新。真实 3D 场景由 `SCNRenderer` 编码至按需绘制的 `MTKView`，更新后显式提交，不依赖 `SCNView` 的独立刷新调度，也不会按屏幕刷新率重复绘制相同姿态。动作仿真保持 30 FPS，曲面密度、平滑、身体曲线和四肢轨迹不变。动作验证会检查实际后端，防止 Metal 失败后悄悄回退。屏幕休眠、会话不活跃或应用隐藏时停止仿真与可见性轮询，普通隐藏窗口的兜底检查降至每秒两次。恢复时重新计时，不补跑停下期间的帧。
+
+排查日常 CPU 占用时，运行 `python3 scripts/profile-running-app.py --sample`，直接记录**当前正在运行的应用**每 5 秒的进程 CPU 时间差和内存，并保存调用栈至 `/private/tmp/hamster-app-profile/`。支持 `--interval 10 --count 6` 延长观察，以及 `--pid` 选择进程。保持窗口可见并记录当时的动作、窗口尺寸、主题；随机活动阶段不同，不能把两次采样当作完全相同负载。CPU 百分比以单个逻辑核心为 100%，包含应用全部线程，不包含 WindowServer，也不代表 GPU 耗电。
+
+`bash scripts/verify-3d-performance.sh` 是额外的受控场景测试：固定 742 × 558 窗口，覆盖静止、持续行走与转身、全速跑轮、夜间跑轮、睡眠、暂停、隐藏、屏幕休眠与不活跃会话，分别检查仿真帧率、实际 Metal 提交帧率和曲面后端。行走场景会持续改换目标，并检查实际位移或转身比例；另记录可见几何元素数。活动场景预热 3 秒、采样 15 秒；`bash scripts/verify-3d-performance.sh current 30` 可延长采样。可用 `--scenario sleep` 等参数单独延长某一场景。结果保存至 `/private/tmp/hamster-3d-performance/current.json`，另报告仿真、场景更新的 CPU 耗时与 GPU 曲面计算耗时。这个测试窗口的数据不能替代实际应用的采样。
+
+后续加功能前可先看 [性能优化与回归指南](docs/performance-guide.md)：包括热点定位、有效优化、踩坑记录、诊断开关与回归命令。本次优化的测试条件、实际应用与受控场景数据见 [3D 性能实测](docs/3d-performance-20261018.md)。
 
 ## 安装
 
@@ -130,13 +142,16 @@ bash scripts/package-release.sh 1.0.2
 ### 实现
 
 - [`HamsterView.swift`](hamster-mac/HamsterView.swift)：输入、舞台坐标、偏好设置、30 FPS 调度与兼容绘制。
+- [`Hamster3DRenderView.swift`](hamster-mac/Hamster3DRenderView.swift)：真实 3D 场景按需呈现、提交计数和显式截图。
+- [`HamsterBodyGPU.swift`](hamster-mac/HamsterBodyGPU.swift)：Metal 曲面生成、共享顶点与缓冲分配。
+- [`HamsterDeformableModel.swift`](hamster-mac/HamsterDeformableModel.swift)：原版关节驱动的形变、固定网格缓存与材质合批。
 - [`HamsterMetalRenderer.swift`](hamster-mac/HamsterMetalRenderer.swift)：按需提交 Metal 帧，使用模板缓冲处理填充、描边与水瓶遮罩，GPU 计算夜间光照。
 - [`MetalGeometry.hpp`](hamster-mac/Native/MetalGeometry.hpp)：场景路径三角形展开、静态网格缓存和绘制命令导出。
 - [`AppDelegate.swift`](hamster-mac/AppDelegate.swift)：应用生命周期与菜单栏控制。
 - [`HamsterEngine.cpp`](hamster-mac/Native/HamsterEngine.cpp)：原生场景模型、Core Graphics 绘制、计时器与对象回收。
 - [`Original.hpp`](hamster-mac/Native/Original.hpp)：参考算法的 C++ 转换结果，文件头保留源文件 SHA-256。
 
-物理使用固定 30 FPS 时间步，卡顿时最多追赶三帧；更新在主线程串行运行，引擎定期回收不可达对象。Metal 默认使用四重多重采样抗锯齿（设备不支持时使用单采样），最多三个帧在途；没有独立的无限刷新循环，隐藏时停止提交并释放绘制表面。交互渲染不做像素回读或同步等待 GPU。可通过 `./run.sh --hamster-cpu-renderer` 强制使用 Core Graphics 诊断兼容问题。Core Graphics 回退路径中的静态背景和跑轮外框按实际像素尺寸缓存，缩放或切换主题时重建；两个缓存各限制为约 16 MiB，超大窗口回退到矢量绘制。节点绘制顺序仅在增删或交换层级时重新排序。窗口恢复显示时重新计时，不追赶隐藏期间的时间。Core Graphics 与浏览器在字体和抗锯齿上可能存在栅格化差异。
+物理使用固定 30 FPS 时间步，卡顿时最多追赶三帧；更新在主线程串行运行，引擎定期回收不可达对象。Metal 默认使用四重多重采样抗锯齿（设备不支持时使用单采样），最多三个帧在途；没有独立的无限刷新循环，隐藏时停止提交并释放绘制表面。二维 Metal 路径的交互渲染不做像素回读或同步等待 GPU。可通过 `./run.sh --hamster-cpu-renderer` 强制使用 Core Graphics 诊断兼容问题。Core Graphics 回退路径中的静态背景和跑轮外框按实际像素尺寸缓存，缩放或切换主题时重建；两个缓存各限制为约 16 MiB，超大窗口回退到矢量绘制。节点绘制顺序仅在增删或交换层级时重新排序。窗口恢复显示时重新计时，不追赶隐藏期间的时间。Core Graphics 与浏览器在字体和抗锯齿上可能存在栅格化差异。
 
 参考算法更新后，可使用 Node.js 和 TypeScript 重新生成移植代码：
 

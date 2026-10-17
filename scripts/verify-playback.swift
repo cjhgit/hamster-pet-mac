@@ -27,6 +27,7 @@ import Darwin
         pump(0.4)
         let runningFrames = view.simulationFrames
         precondition(runningFrames > 0, "Visible animation must advance")
+        precondition(view.scene3D!.view.submittedFrames > 0, "Visible animation must actually present Metal frames")
         precondition(!step.isEnabled)
         key(49, " "); precondition(view.isPlaybackPaused)
         key(49, " "); precondition(!view.isPlaybackPaused)
@@ -62,16 +63,38 @@ import Darwin
         precondition(view.simulationFrames == frame + 4)
         precondition(abs(view.simulationMilliseconds - milliseconds - 4000 / 30) < 0.001)
         pump(0.2); precondition(view.simulationFrames == frame + 4)
+        let pausedSubmissions = scene.view.submittedFrames
+        pump(0.2)
+        precondition(scene.view.submittedFrames == pausedSubmissions, "Paused scene must not keep submitting duplicate frames")
         key(49, " ")
         precondition(!view.isPlaybackPaused && !step.isEnabled)
         let resumedFrame = view.simulationFrames, resumedTime = view.simulationMilliseconds
         pump(0.22)
         precondition(view.simulationFrames > resumedFrame)
+        precondition(scene.view.submittedFrames > pausedSubmissions, "Resume must present new Metal frames")
         precondition(view.simulationMilliseconds - resumedTime < 500, "Resume must not catch up paused time")
+        let center = NSWorkspace.shared.notificationCenter
+        center.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
+        let asleepFrame = view.simulationFrames
+        pump(0.12)
+        let asleepSubmissions = scene.view.submittedFrames
+        pump(0.12)
+        precondition(scene.view.submittedFrames == asleepSubmissions, "Display sleep must stop Metal submissions")
+        window.orderOut(nil); window.makeKeyAndOrderFront(nil); pump(0.12)
+        precondition(view.simulationFrames == asleepFrame, "Display sleep must suspend even a visible window")
+        center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        center.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
+        pump(0.12)
+        precondition(view.simulationFrames == asleepFrame, "Display wake must not resume an inactive session")
+        center.post(name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
+        let restoringSubmissions = scene.view.submittedFrames
+        pump(0.18)
+        precondition(view.simulationFrames > asleepFrame && view.simulationFrames - asleepFrame <= 7, "Session restore must resume without catching up")
+        precondition(scene.view.submittedFrames > restoringSubmissions, "Session restore must recreate drawables and present")
         let pauseMenu = view.makeSettingsMenu()
         pauseMenu.performActionForItem(at: pauseMenu.indexOfItem(withTitle: "暂停播放"))
         precondition(view.isPlaybackPaused)
         window.orderOut(nil)
-        print("PASS: playback controls, hit testing, shortcuts, frame stepping, frozen pose/input, orbit, theme/resize/hide and resume without catch-up")
+        print("PASS: playback, frame stepping, frozen pose/input, orbit, theme/resize/hide, display sleep, inactive session and resume without catch-up")
     }
 }

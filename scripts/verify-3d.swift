@@ -61,7 +61,29 @@ import Darwin
                 _ = geo
             }
         }
-        precondition(meshes > 50)
+        // Batching changes the number of SceneKit objects, not the solid
+        // contents. Check each semantic object and articulated feature instead
+        // of requiring redundant draw nodes.
+        for name in ["Habitat", "Wheel stand", "Running wheel", "Water bottle", "Pendant lamp", "Hamster"] {
+            let node = renderer.scene.rootNode.childNode(withName: name, recursively: true)!
+            // SCNNode reports an empty aggregate box for hidden objects (the
+            // daytime lamp). Individual geometry boxes were checked above.
+            var solids = node.geometry == nil ? 0 : 1
+            node.enumerateChildNodes { child, _ in if child.geometry != nil { solids += 1 } }
+            precondition(solids > 0, "Missing solid object: \(name)")
+        }
+        for name in ["Hamster deforming skin", "Right eye", "Left eye", "Right ear", "Left ear", "Black ear rim 0", "Black ear rim 1"] {
+            let geometry = renderer.hamster.childNode(withName: name, recursively: true)!.geometry!
+            precondition(geometry.sources(for: .vertex).first!.vectorCount > 20)
+            precondition(geometry.elements.contains { $0.primitiveCount > 0 })
+        }
+        if !CommandLine.arguments.contains("--hamster-unbatched") {
+            let batch = renderer.hamster.childNode(withName: "Batched deforming limbs, paws and strokes", recursively: true)!
+            let geometry = batch.geometry!
+            precondition(geometry.sources(for: .vertex).first!.vectorCount > 1500)
+            precondition(geometry.materials.count >= 3 && geometry.elements.count >= 3)
+            precondition(batch.childNodes.first!.geometry!.sources(for: .vertex).first!.vectorCount == geometry.sources(for: .vertex).first!.vectorCount)
+        }
         print("PASS: \(meshes) volumetric meshes, all six scene views and eight hamster orbit views rendered")
         renderer.preset(0)
         let projected = renderer.project(.init(20, 80, 42))

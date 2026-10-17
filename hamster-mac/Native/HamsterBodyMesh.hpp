@@ -39,12 +39,19 @@ struct Field {
             Vec wrist=point(HamsterEngineGetRigPoint(engine,7+5*leg));
             extension[leg]=std::clamp(dot(wrist-base,axis)/24.0,-1.0,1.0);
         }
-        buildBodySections();
-        for(int i=0;i<=256;i++)headSections[i]=profile(-15+51*double(i)/256);
         double a=state.heading+state.headYaw,p=state.headPitch;
         headForward={cos(a)*cos(p),-sin(p),sin(a)*cos(p)};
         headDown={-cos(a)*sin(p),-cos(p),-sin(a)*sin(p)};
         headSide={sin(a),0,-cos(a)};
+    }
+    void prepare(){
+        buildBodySections();
+        static const auto lookup=[]{
+            std::array<Profile,257> result;
+            for(int i=0;i<=256;i++)result[i]=profile(-15+51*double(i)/256);
+            return result;
+        }();
+        headSections=lookup;
     }
     Vec headLocal(Vec p)const{Vec d=p-head;return {dot(d,headForward),dot(d,headDown),dot(d,headSide)};}
     Vec headWorld(Vec p)const{return head+headForward*p.x+headDown*p.y+headSide*p.z;}
@@ -104,7 +111,7 @@ struct Field {
         double radial=(sqrt(pow((y-cy)/ry,2)+pow(z/rz,2))-1)*std::min(ry,rz);
         return std::max(radial,std::abs(x)-torsoLength);
     }
-    Profile profile(double x)const{
+    static Profile profile(double x){
         static const Profile p[]={
             {-15,0,.2,.2},{-10,0,11,12},{0,0,15,18},{6,-1,15.6,17},
             {13,-1.5,15,14},{23,0,12.5,8},{29,2,8.5,4.5},
@@ -147,11 +154,53 @@ struct Field {
 };
 }
 
+HamsterBodyField HamsterEngineBuildBodyField(void *engine){
+    using namespace hamster_body;
+    E=static_cast<Engine*>(engine);
+    Field field(engine);
+    std::vector<double> signature;
+    signature.reserve(23);
+    for(Vec p:{field.rear,field.front,field.head,field.headForward,field.headDown,field.side}){
+        signature.push_back(p.x);signature.push_back(p.y);signature.push_back(p.z);
+    }
+    signature.push_back(field.runShape);
+    for(double extension:field.extension)signature.push_back(extension*field.runShape);
+    bool changed=signature.size()!=E->bodyFieldSignature.size();
+    if(!changed)for(size_t i=0;i<signature.size();i++)if(std::abs(signature[i]-E->bodyFieldSignature[i])>(i<9?.025:.0008)){changed=true;break;}
+    if(changed){
+        field.prepare();
+        E->bodyFieldSignature=signature;
+        Vec extent={std::abs(field.axis.x)*field.torsoLength+24*(std::abs(field.down.x)+std::abs(field.side.x)),
+                    std::abs(field.axis.y)*field.torsoLength+24*(std::abs(field.down.y)+std::abs(field.side.y)),
+                    std::abs(field.axis.z)*field.torsoLength+24*(std::abs(field.down.z)+std::abs(field.side.z))};
+        Vec lo=field.center-extent,hi=field.center+extent;
+        for(double x:{-16.,37.})for(double y:{-18.,17.})for(double z:{-20.,20.}){
+            Vec p=field.headWorld({x,y,z});
+            lo={std::min(lo.x,p.x),std::min(lo.y,p.y),std::min(lo.z,p.z)};
+            hi={std::max(hi.x,p.x),std::max(hi.y,p.y),std::max(hi.z,p.z)};
+        }
+        constexpr double step=1.6;
+        lo={floor((lo.x-2)/step)*step,floor((lo.y-2)/step)*step,floor((lo.z-2)/step)*step};
+        int nx=int(ceil((hi.x+2-lo.x)/step))+1,ny=int(ceil((hi.y+2-lo.y)/step))+1,nz=int(ceil((hi.z+2-lo.z)/step))+1;
+        auto &out=E->bodyField;
+        out.clear();out.reserve(524*4);
+        auto put=[&](Vec p,double w=0){out.insert(out.end(),{float(p.x),float(p.y),float(p.z),float(w)});};
+        put(field.center,field.torsoLength);put(field.axis);put(field.down);put(field.side);
+        put(field.head);put(field.headForward);put(field.headDown);put(field.headSide);
+        put(lo,step);put({double(nx),double(ny),double(nz)});
+        for(const auto &s:field.bodySections)out.insert(out.end(),{float(s.back),float(s.belly),float(s.right),float(s.left)});
+        for(const auto &s:field.headSections)out.insert(out.end(),{float(s.cy),float(s.ry),float(s.rz),0});
+        ++E->bodyFieldGeneration;
+    }
+    return {E->bodyField.data(),uint32_t(E->bodyField.size()),E->bodyFieldGeneration};
+}
+
 HamsterBodyMesh HamsterEngineBuildBodyMesh(void *engine){
     using namespace hamster_body;
     E=static_cast<Engine*>(engine);
     Field field(engine);
     std::vector<double> signature;
+    signature.reserve(23);
     for(Vec p:{field.rear,field.front,field.head,field.headForward,field.headDown,field.side}){
         signature.push_back(p.x);signature.push_back(p.y);signature.push_back(p.z);
     }
@@ -159,7 +208,10 @@ HamsterBodyMesh HamsterEngineBuildBodyMesh(void *engine){
     for(double extension:field.extension)signature.push_back(extension*field.runShape);
     bool changed=signature.size()!=E->bodySignature.size();
     if(!changed)for(size_t i=0;i<signature.size();i++)if(std::abs(signature[i]-E->bodySignature[i])>(i<9?.025:.0008)){changed=true;break;}
-    if(!changed)return {E->bodyVertices.data(),uint32_t(E->bodyVertices.size()),E->bodyGeneration};
+    auto result=[&](){return HamsterBodyMesh{E->bodyVertices.data(),uint32_t(E->bodyVertices.size()),E->bodyGeneration,
+                                           E->bodyIndices.data(),uint32_t(E->bodyIndices.size())};};
+    if(!changed)return result();
+    field.prepare();
     E->bodySignature=signature;
     E->bodyVertices.clear();
     Vec extent={std::abs(field.axis.x)*field.torsoLength+24*(std::abs(field.down.x)+std::abs(field.side.x)),
@@ -190,22 +242,19 @@ HamsterBodyMesh HamsterEngineBuildBodyMesh(void *engine){
     };
     static const double sideMark[7][2]={{32,1},{35,2},{33,9},{25,12},{3,11},{8,6},{23,6}};
     static const double frontMark[7][2]={{3,1},{0,2},{0,9},{0,12},{8,11},{15,6},{8,6}};
-    struct Sample {Vec p;uint64_t key;};
     struct SkinVertex {Vec p,neighbors,normal;double weight=0;};
     std::vector<SkinVertex> skin;
-    std::vector<uint32_t> triangles;
-    std::unordered_map<uint64_t,uint32_t> edgeVertices;
-    skin.reserve(12000);triangles.reserve(72000);edgeVertices.reserve(12000);
-    auto vertex=[&](Sample sample){
-        auto found=edgeVertices.find(sample.key);
-        if(found!=edgeVertices.end())return found->second;
-        uint32_t index=uint32_t(skin.size());edgeVertices.emplace(sample.key,index);
-        skin.push_back({sample.p,{},{},0});return index;
-    };
-    auto emit=[&](Sample a,Sample b,Sample c,Vec outward){
-        if(dot(cross(b.p-a.p,c.p-a.p),outward)<0)std::swap(b,c);
-        uint32_t indices[]={vertex(a),vertex(b),vertex(c)};
-        double area=length(cross(b.p-a.p,c.p-a.p));
+    auto &triangles=E->bodyIndices;
+    triangles.clear();
+    // Each lattice point owns seven forward edges (axes and diagonals).
+    // Direct addressing avoids a hash lookup/allocation for every triangle corner.
+    std::vector<uint32_t> edgeVertices(grid.size()*7,UINT32_MAX);
+    skin.reserve(24000);triangles.reserve(72000);
+    auto emit=[&](uint32_t a,uint32_t b,uint32_t c,Vec outward){
+        Vec normal=cross(skin[b].p-skin[a].p,skin[c].p-skin[a].p);
+        if(dot(normal,outward)<0)std::swap(b,c);
+        uint32_t indices[]={a,b,c};
+        double area=length(normal);
         for(int i=0;i<3;i++){
             triangles.push_back(indices[i]);
             auto &v=skin[indices[i]];
@@ -220,13 +269,21 @@ HamsterBodyMesh HamsterEngineBuildBodyMesh(void *engine){
         for(int i=0;i<8;i++){
             int xx=x+corners[i][0],yy=y+corners[i][1],zz=z+corners[i][2];
             gridIndex[i]=uint32_t(index(xx,yy,zz));
-            p[i]=lo+Vec{double(xx),double(yy),double(zz)}*step;d[i]=grid[gridIndex[i]];insideCount+=d[i]<0;
+            d[i]=grid[gridIndex[i]];insideCount+=d[i]<0;
         }
         if(insideCount==0||insideCount==8)continue;
+        // Most cells are empty or internal: only surface cells need positions.
+        for(int i=0;i<8;i++)p[i]=lo+Vec{double(x+corners[i][0]),double(y+corners[i][1]),double(z+corners[i][2])}*step;
         auto edge=[&](int a,int b){
+            int direction=std::abs(corners[a][0]-corners[b][0])+2*std::abs(corners[a][1]-corners[b][1])+4*std::abs(corners[a][2]-corners[b][2]);
+            uint32_t key=std::min(gridIndex[a],gridIndex[b])*7+uint32_t(direction-1);
+            auto &cached=edgeVertices[key];
+            if(cached!=UINT32_MAX)return cached;
+            // Resolve an intersection once, not once per incident triangle.
             double t=d[a]/(d[a]-d[b]);
-            uint64_t key=(uint64_t(std::min(gridIndex[a],gridIndex[b]))<<32)|std::max(gridIndex[a],gridIndex[b]);
-            return Sample{p[a]+(p[b]-p[a])*t,key};
+            cached=uint32_t(skin.size());
+            skin.push_back({p[a]+(p[b]-p[a])*t,{},{},0});
+            return cached;
         };
         for(auto &t:tetra){
             int in[4],out[4],ni=0,no=0;
@@ -238,7 +295,7 @@ HamsterBodyMesh HamsterEngineBuildBodyMesh(void *engine){
             if(ni==1)emit(edge(in[0],out[0]),edge(in[0],out[1]),edge(in[0],out[2]),outward);
             else if(ni==3)emit(edge(out[0],in[0]),edge(out[0],in[1]),edge(out[0],in[2]),outward);
             else if(ni==2){
-                Sample a=edge(in[0],out[0]),b=edge(in[0],out[1]),c=edge(in[1],out[0]),d0=edge(in[1],out[1]);
+                uint32_t a=edge(in[0],out[0]),b=edge(in[0],out[1]),c=edge(in[1],out[0]),d0=edge(in[1],out[1]);
                 emit(a,b,c,outward);emit(b,d0,c,outward);
             }
         }
@@ -252,8 +309,9 @@ HamsterBodyMesh HamsterEngineBuildBodyMesh(void *engine){
         a.normal=a.normal+normal;b.normal=b.normal+normal;c.normal=c.normal+normal;
     }
     for(auto &v:skin)v.normal=unit(v.normal);
-    for(uint32_t index:triangles){
-        Vec p=skin[index].p,n=skin[index].normal,local=field.headLocal(p);
+    // Export welded vertices once. Skin and outline share this indexed surface.
+    for(const auto &vertex:skin){
+        Vec p=vertex.p,n=vertex.normal,local=field.headLocal(p);
         double coat=0;
         if(local.x>0&&local.x<36&&local.y>-.5&&local.y<13){
             double front=std::clamp((dot(n,field.headForward)-std::abs(dot(n,field.headSide))+.2)/.4,0.0,1.0);
@@ -263,5 +321,5 @@ HamsterBodyMesh HamsterEngineBuildBodyMesh(void *engine){
         E->bodyVertices.push_back({float(p.x),float(p.y),float(p.z),float(n.x),float(n.y),float(n.z),float(coat),.5f});
     }
     ++E->bodyGeneration;
-    return {E->bodyVertices.data(),uint32_t(E->bodyVertices.size()),E->bodyGeneration};
+    return result();
 }

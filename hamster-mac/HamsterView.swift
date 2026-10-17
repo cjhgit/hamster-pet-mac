@@ -78,6 +78,12 @@ final class HamsterView: NSView, NSMenuItemValidation {
     private var orbitPrevious = NSPoint.zero
     private var orbitDragged = false
     private let sceneHint = CATextLayer()
+    private struct SceneLayout: Equatable {
+        let bounds: NSRect
+        let scale: CGFloat
+        let night, paused, watermark: Bool
+    }
+    private var sceneLayout: SceneLayout?
     private let playbackControls = NSStackView()
     private let playButton = NSButton(title: "暂停", target: nil, action: nil)
     private let stepButton = NSButton(title: "下一帧", target: nil, action: nil)
@@ -93,6 +99,9 @@ final class HamsterView: NSView, NSMenuItemValidation {
     var simulationFrames: Int { Int(HamsterEngineGetFrameCount(engine)) }
     var simulationMilliseconds: Double { HamsterEngineGetElapsedMilliseconds(engine) }
     private var observers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var displayAsleep = false
+    private var sessionInactive = false
     private var previousTime = ProcessInfo.processInfo.systemUptime
     private var accumulator = 0.0
     private var pendingTimerMilliseconds = 0.0
@@ -182,6 +191,7 @@ final class HamsterView: NSView, NSMenuItemValidation {
         timer?.invalidate()
         visibilityWatchdog?.invalidate()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         HamsterEngineDestroy(engine)
     }
 
@@ -201,6 +211,25 @@ final class HamsterView: NSView, NSMenuItemValidation {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if workspaceObservers.isEmpty {
+            let center = NSWorkspace.shared.notificationCenter
+            for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.screensDidWakeNotification,
+                         NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+                workspaceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        switch notification.name {
+                        case NSWorkspace.screensDidSleepNotification: self.displayAsleep = true
+                        case NSWorkspace.screensDidWakeNotification: self.displayAsleep = false
+                        case NSWorkspace.sessionDidResignActiveNotification: self.sessionInactive = true
+                        case NSWorkspace.sessionDidBecomeActiveNotification: self.sessionInactive = false
+                        default: break
+                        }
+                        self.updateActivity()
+                    }
+                })
+            }
+        }
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
         visibilityWatchdog?.invalidate()
@@ -229,7 +258,7 @@ final class HamsterView: NSView, NSMenuItemValidation {
     /// low-frequency watchdog that survives while the animation is suspended.
     private var isAnimationVisible: Bool {
         window?.isVisible == true && window?.occlusionState.contains(.visible) == true &&
-            window?.isMiniaturized == false && !NSApp.isHidden
+            window?.isMiniaturized == false && !NSApp.isHidden && !displayAsleep && !sessionInactive
     }
 
     private func updateActivity() {
@@ -271,17 +300,18 @@ final class HamsterView: NSView, NSMenuItemValidation {
             pendingTimerMilliseconds = 0
             HamsterEnginePurgeRenderCache(engine)
             metalRenderer?.releaseDrawables()
+            scene3D?.view.discardDrawables()
         }
-        if isPlaybackPaused {
+        if isPlaybackPaused || displayAsleep || sessionInactive || NSApp.isHidden || window?.isMiniaturized == true {
             visibilityWatchdog?.invalidate()
             visibilityWatchdog = nil
             return
         }
         guard window != nil, visibilityWatchdog == nil else { return }
-        let watchdog = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+        let watchdog = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshActivity() }
         }
-        watchdog.tolerance = 0.025
+        watchdog.tolerance = 0.2
         visibilityWatchdog = watchdog
         RunLoop.main.add(watchdog, forMode: .common)
     }
@@ -418,8 +448,9 @@ final class HamsterView: NSView, NSMenuItemValidation {
         // Drawing while visible restarts a stalled loop when the window server
         // omitted occlusion notifications entirely.
         if timer == nil, isAnimationVisible { startAnimation() }
-        if scene3D != nil {
+        if let scene3D {
             update3DLayout()
+            scene3D.view.draw()
             return
         }
         if let renderer = metalRenderer, NSGraphicsContext.current?.isDrawingToScreen == true {
@@ -560,8 +591,11 @@ final class HamsterView: NSView, NSMenuItemValidation {
 
     private func update3DLayout() {
         guard let scene3D else { return }
-        scene3D.resize(bounds)
         let scale = window?.backingScaleFactor ?? 2
+        let layout = SceneLayout(bounds: bounds, scale: scale, night: isDarkMode, paused: isPlaybackPaused, watermark: showsWatermark)
+        guard sceneLayout != layout else { return }
+        sceneLayout = layout
+        scene3D.resize(bounds)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         scene3D.view.layer?.cornerRadius = 12

@@ -85,7 +85,11 @@ struct Engine {
     std::vector<HamsterVertex> metalVertices;
     std::vector<HamsterDrawCommand> metalCommands;
     std::vector<HamsterBodyVertex> bodyVertices;
+    std::vector<uint32_t> bodyIndices;
     std::vector<double> bodySignature;
+    std::vector<float> bodyField;
+    std::vector<double> bodyFieldSignature;
+    uint32_t bodyFieldGeneration=0;
     uint32_t bodyGeneration=0;
     explicit Engine(uint32_t s):seed(s) { for(int i=0;i<PropertyCount;i++) keys[propertyNames[i]]=i; }
     double random() { seed=seed*1664525u+1013904223u; return double(seed)/4294967296.0; }
@@ -491,18 +495,24 @@ int HamsterEngineGetRigFeatureCount(void *engine,int feature){
     E=static_cast<Engine*>(engine);V p=G(rigFeature(G(E->root,P_ham),feature),P_opoints);
     return p.o?int(rigNumber(p,P_length)):0;
 }
-HamsterRigPoint HamsterEngineGetRigFeaturePoint(void *engine,int feature,int index){
+HamsterRigPoint HamsterEngineGetRigFeatureLocalPoint(void *engine,int feature,int index){
     E=static_cast<Engine*>(engine);V h=G(E->root,P_ham),clip=rigFeature(h,feature),points=G(clip,P_opoints);
     if(!points.o||index<0||index>=int(rigNumber(points,P_length)))return {};
     V p=indexGet(points,V(index));bool eye=feature<2;
     V center=G(h,eye?P_eyePt:P_earPt);
     double side=(feature%2==0?1:-1),gap=rigNumber(h,eye?P_eyeGap:P_earGap);
-    double a=rigNumber(h,P_ang)+rigNumber(h,P_headAng),co=cos(a),si=sin(a);
     double x=rigNumber(p,P_x)+rigNumber(center,P_x),y=rigNumber(p,P_y),z=rigNumber(p,P_z)+side*gap;
     if(eye)y*=std::clamp(rigNumber(h,P_eyesCloseFrac,1),.03,1.0);
     y+=rigNumber(center,P_y);
+    return {x,-y,-z,bool(G(p,P_curve))};
+}
+HamsterRigPoint HamsterEngineGetRigFeaturePoint(void *engine,int feature,int index){
+    if(index<0 || index>=HamsterEngineGetRigFeatureCount(engine,feature))return {};
+    auto p=HamsterEngineGetRigFeatureLocalPoint(engine,feature,index);
+    V h=G(E->root,P_ham);
+    double a=rigNumber(h,P_ang)+rigNumber(h,P_headAng),co=cos(a),si=sin(a);
     HamsterRigPoint head=HamsterEngineGetRigPoint(engine,2);
-    return {head.x+co*x+si*z,head.y-y,head.z+si*x-co*z,bool(G(p,P_curve))};
+    return {head.x+co*p.x-si*p.z,head.y+p.y,head.z+si*p.x+co*p.z,p.curve};
 }
 uint32_t HamsterEngineGetSceneColor(void *engine,const char *name){
     E=static_cast<Engine*>(engine);double c=number(G(E->root,E->key(name)));
