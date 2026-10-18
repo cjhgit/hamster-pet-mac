@@ -272,10 +272,6 @@ import MetalKit
         rod(SCNVector3(0, -73, 0), SCNVector3(12, -90, 0), radius: 3.8, color: ink, name: "Drinking nozzle outline", parent: bottle)
         rod(SCNVector3(0, -73, 0), SCNVector3(12, -90, 0), radius: 2.5, color: .lightGray, name: "Metal drinking nozzle", parent: bottle)
         ellipsoid(.init(3.1, 3.1, 3.1), color: .gray, name: "Drinking ball", parent: bottle, at: .init(12, -90, 0), outline: 0)
-        // Rear fastening clips make the bottle complete from behind as well.
-        for y: CGFloat in [-42, 42] {
-            _ = box(.init(57, 3, 3), radius: 1, color: ink, name: "Bottle rear clip", parent: bottle, at: .init(0, y, -15), outline: 0)
-        }
         flattenGeometry(in: bottle)
     }
 
