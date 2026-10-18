@@ -62,6 +62,109 @@ struct HamsterCanvas: NSViewRepresentable {
     func updateNSView(_ nsView: HamsterView, context: Context) {}
 }
 
+/// 右键菜单「帮助」打开的说明窗口：汇总互动方式、视角操作与仓鼠的日常状态。
+final class HamsterHelpWindowController: NSWindowController {
+    private static var sharedController: HamsterHelpWindowController?
+    private let textView = NSTextView()
+
+    static func present(dark: Bool) {
+        let controller = sharedController ?? HamsterHelpWindowController()
+        sharedController = controller
+        controller.applyTheme(dark: dark)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private init() {
+        let scroll = NSScrollView()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 560),
+                              styleMask: [.titled, .closable, .miniaturizable],
+                              backing: .buffered, defer: false)
+        window.title = "仓鼠帮助"
+        window.isReleasedWhenClosed = false
+        window.setFrameAutosaveName("hamster.help")
+        super.init(window: window)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.isRichText = false
+        textView.textContainerInset = NSSize(width: 8, height: 12)
+        textView.textStorage?.setAttributedString(Self.helpText())
+        scroll.documentView = textView
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        window.contentView = scroll
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: window.contentView!.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: window.contentView!.bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    func applyTheme(dark: Bool) {
+        window?.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        window?.backgroundColor = .windowBackgroundColor
+    }
+
+    /// 帮助正文：条目左侧为操作名，右侧浅色说明；分节标题加粗。
+    private static func helpText() -> NSAttributedString {
+        let text = NSMutableAttributedString()
+        let titleStyle = NSMutableParagraphStyle()
+        titleStyle.paragraphSpacingBefore = 14
+        titleStyle.paragraphSpacing = 5
+        let bodyStyle = NSMutableParagraphStyle()
+        bodyStyle.paragraphSpacing = 6
+        bodyStyle.lineSpacing = 2.5
+        let title = [NSAttributedString.Key.font: NSFont.boldSystemFont(ofSize: 14),
+                     .foregroundColor: NSColor.labelColor, .paragraphStyle: titleStyle] as [NSAttributedString.Key: Any]
+        let lead = [NSAttributedString.Key.font: NSFont.systemFont(ofSize: 12.5, weight: .semibold),
+                    .foregroundColor: NSColor.labelColor, .paragraphStyle: bodyStyle] as [NSAttributedString.Key: Any]
+        let detail = [NSAttributedString.Key.font: NSFont.systemFont(ofSize: 12.5),
+                      .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: bodyStyle] as [NSAttributedString.Key: Any]
+
+        func section(_ name: String) { text.append(NSAttributedString(string: name + "\n", attributes: title)) }
+        func row(_ action: String, _ effect: String) {
+            text.append(NSAttributedString(string: "• " + action, attributes: lead))
+            text.append(NSAttributedString(string: " —— " + effect + "\n", attributes: detail))
+        }
+        func note(_ content: String) {
+            text.append(NSAttributedString(string: content + "\n", attributes: detail))
+        }
+
+        section("怎么玩")
+        row("在画面内移动鼠标", "吸引仓鼠注意，唤醒打盹或睡觉的它")
+        row("点击空白处", "投喂食物，最多同时 10 粒")
+        row("按住食物拖动再松开", "移动或抛出食物")
+        row("⌘ + 拖动", "播放时直接把食物拖到仓鼠面前")
+        row("点击黄色轮心", "邀请仓鼠上跑轮跑一会儿")
+
+        section("视角与播放")
+        row("拖动", "旋转视角")
+        row("滚轮 / 双指捏合", "缩放")
+        row("⇧ + 拖动", "平移画面")
+        row("数字 0–6", "正面、立体、右侧、背面、俯视、左侧、仓鼠特写；0 同时复位缩放与平移")
+        row("空格", "暂停 / 继续播放")
+        row("→ 或 .", "暂停时前进一帧（1/30 秒）；暂停时仍可旋转、缩放、平移，点击不再投食")
+
+        section("窗口与菜单")
+        row("按住窗口顶部拖动", "移动窗口；拖动边缘可手动缩放")
+        row("右键 / ⌃点击", "置顶、窗口大小、深色模式（点亮夜间吊灯）、显示水印、暂停播放、3D 视角等")
+        row("调试工具", "在左下角显示「暂停 / 继续、下一帧、帧数」控制条；空格与菜单项始终可用")
+        row("菜单栏爪印图标", "显示 / 隐藏仓鼠，或退出应用")
+
+        section("仓鼠的一天")
+        note("仓鼠按自己的节奏生活：在笼里闲逛、驻足张望；闻到食物会跑过来捧着吃；渴了去水瓶喝水；闲下来坐着洗脸梳理；上轮撒欢跑一阵，跑累了歇息，困了就地蜷成一团睡觉。移动鼠标可以把它唤醒。")
+        note("源自 aBowman 的 Chrome 仓鼠小玩具，由 3D 场景重制。")
+        return text
+    }
+}
+
 /// AppKit input with on-demand Metal rendering and a Core Graphics fallback.
 final class HamsterView: NSView, NSMenuItemValidation {
     private let engine: UnsafeMutableRawPointer
@@ -70,6 +173,8 @@ final class HamsterView: NSView, NSMenuItemValidation {
     private var showsWatermark = true
     private static let darkModeKey = "hamster.darkMode"
     private var isDarkMode = false
+    private static let debugToolsKey = "hamster.showsDebugTools"
+    private var showsDebugTools = false
     private var timer: Timer?
     private var visibilityWatchdog: Timer?
     private var metalRenderer: HamsterMetalRenderer?
@@ -142,6 +247,7 @@ final class HamsterView: NSView, NSMenuItemValidation {
         setAccessibilityLabel("宠物仓鼠")
         showsWatermark = preferences.object(forKey: Self.watermarkKey) as? Bool ?? true
         isDarkMode = preferences.bool(forKey: Self.darkModeKey)
+        showsDebugTools = preferences.bool(forKey: Self.debugToolsKey)
         updateWatermark()
         setAccessibilityHelp("点击空白处投食，按住拖动或抛出食物；点击黄色轮心让仓鼠上跑轮。移动鼠标可唤醒仓鼠。")
         if prefers3D && !ProcessInfo.processInfo.arguments.contains("--hamster-cpu-renderer") {
@@ -149,7 +255,7 @@ final class HamsterView: NSView, NSMenuItemValidation {
             scene3D = renderer
             addSubview(renderer.view)
             configurePlaybackControls()
-            sceneHint.string = "拖动旋转 · 滚轮缩放 · ⇧拖动平移 · ⌘拖动食物 · 0 复位"
+            sceneHint.isHidden = true
             sceneHint.fontSize = 10
             sceneHint.alignmentMode = .center
             sceneHint.foregroundColor = NSColor.secondaryLabelColor.cgColor
@@ -390,6 +496,8 @@ final class HamsterView: NSView, NSMenuItemValidation {
     }
 
     private func updatePlaybackControls() {
+        // 暂停/逐帧控件属于调试工具，默认隐藏，右键菜单开启后才显示。
+        playbackControls.isHidden = !showsDebugTools
         playButton.title = isPlaybackPaused ? "继续" : "暂停"
         stepButton.isEnabled = isPlaybackPaused
         playbackPosition.isHidden = !isPlaybackPaused
@@ -582,7 +690,7 @@ final class HamsterView: NSView, NSMenuItemValidation {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
-        if scene3D != nil && playbackControls.frame.contains(local) {
+        if scene3D != nil && !playbackControls.isHidden && playbackControls.frame.contains(local) {
             return playbackControls.hitTest(local)
         }
         if scene3D != nil { return bounds.contains(convert(point, from: superview)) ? self : nil }
@@ -602,8 +710,8 @@ final class HamsterView: NSView, NSMenuItemValidation {
         sceneHint.contentsScale = scale
         sceneHint.frame = .init(x: 4, y: bounds.height - 20, width: bounds.width - 8, height: 16)
         sceneHint.fontSize = bounds.width < 500 ? 8 : 10
-        sceneHint.string = isPlaybackPaused ? "已暂停 · 可旋转视角 · 空格继续 · → 下一帧" :
-            (bounds.width < 500 ? "拖动旋转 · 滚轮缩放 · 空格暂停" : "拖动旋转 · 滚轮缩放 · ⇧拖动平移 · 0 复位 · 空格暂停")
+        sceneHint.string = isPlaybackPaused ? "已暂停 · 空格继续 · → 下一帧" : nil
+        sceneHint.isHidden = !isPlaybackPaused
         sceneHint.foregroundColor = (isDarkMode ? NSColor.lightGray : NSColor.gray).cgColor
         let appearanceName: NSAppearance.Name = isDarkMode ? .darkAqua : .aqua
         if playbackControls.appearance?.name != appearanceName {
@@ -692,6 +800,9 @@ final class HamsterView: NSView, NSMenuItemValidation {
         let darkMode = menu.addItem(withTitle: "深色模式", action: #selector(toggleDarkMode(_:)), keyEquivalent: "")
         darkMode.target = self
         darkMode.state = isDarkMode ? .on : .off
+        let debugTools = menu.addItem(withTitle: "调试工具", action: #selector(toggleDebugTools(_:)), keyEquivalent: "")
+        debugTools.target = self
+        debugTools.state = showsDebugTools ? .on : .off
         menu.addItem(.separator())
         let playback = menu.addItem(withTitle: isPlaybackPaused ? "继续播放" : "暂停播放", action: #selector(togglePlayback(_:)), keyEquivalent: "")
         playback.target = self
@@ -709,7 +820,14 @@ final class HamsterView: NSView, NSMenuItemValidation {
             menu.addItem(withTitle: "3D 视角", action: nil, keyEquivalent: "").submenu = views
 
         }
+        menu.addItem(.separator())
+        let help = menu.addItem(withTitle: "帮助", action: #selector(showHelp(_:)), keyEquivalent: "")
+        help.target = self
         return menu
+    }
+
+    @objc private func showHelp(_ sender: NSMenuItem) {
+        HamsterHelpWindowController.present(dark: isDarkMode)
     }
 
     @objc private func change3DView(_ sender: NSMenuItem) { scene3D?.preset(sender.tag) }
@@ -731,6 +849,12 @@ final class HamsterView: NSView, NSMenuItemValidation {
         scene3D?.update(night: isDarkMode)
         update3DLayout()
         needsDisplay = true
+    }
+
+    @objc private func toggleDebugTools(_ sender: NSMenuItem) {
+        showsDebugTools.toggle()
+        preferences.set(showsDebugTools, forKey: Self.debugToolsKey)
+        updatePlaybackControls()
     }
 
     @objc private func changeWindowSize(_ sender: NSMenuItem) {

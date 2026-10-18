@@ -29,6 +29,12 @@ import Darwin
         precondition(runningFrames > 0, "Visible animation must advance")
         precondition(view.scene3D!.view.submittedFrames > 0, "Visible animation must actually present Metal frames")
         precondition(!step.isEnabled)
+        // 暂停控件默认隐藏；右键菜单开启「调试工具」后才显示并可点击。
+        let overlayPoint = play.convert(NSPoint(x: play.bounds.midX, y: play.bounds.midY), to: view)
+        precondition(view.hitTest(view.convert(overlayPoint, to: view.superview)) !== play, "Playback overlay must stay hidden until debug tools are enabled")
+        let debugMenu = view.makeSettingsMenu()
+        debugMenu.performActionForItem(at: debugMenu.indexOfItem(withTitle: "调试工具"))
+        precondition(prefs.bool(forKey: "hamster.showsDebugTools"))
         key(49, " "); precondition(view.isPlaybackPaused)
         key(49, " "); precondition(!view.isPlaybackPaused)
         view.layoutSubtreeIfNeeded()
@@ -94,6 +100,9 @@ import Darwin
         let pauseMenu = view.makeSettingsMenu()
         pauseMenu.performActionForItem(at: pauseMenu.indexOfItem(withTitle: "暂停播放"))
         precondition(view.isPlaybackPaused)
+        let help = view.makeSettingsMenu()
+        help.performActionForItem(at: help.indexOfItem(withTitle: "帮助"))
+        precondition(NSApp.windows.contains { $0.title == "仓鼠帮助" && $0.isVisible }, "Help menu must open the help window")
         window.orderOut(nil)
         print("PASS: playback, frame stepping, frozen pose/input, orbit, theme/resize/hide, display sleep, inactive session and resume without catch-up")
     }

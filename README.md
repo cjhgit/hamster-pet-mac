@@ -16,7 +16,7 @@ This branch uses actual, deformable SceneKit / Metal meshes for the hamster, bot
 
 Drag to orbit, scroll or pinch to zoom, Shift-drag to pan, click to feed, and Command-drag food. Keys **0–6** select front/reset, three-quarter, right, rear, top, left, and hamster close-up.
 
-Use the bottom-left **Pause / Resume** button or **Space** to freeze playback. While paused, **Next frame**, **→**, or **.** advances exactly 1/30 second. Camera controls remain available; scene clicks do not feed or trigger behavior. `bash scripts/verify-playback.sh` checks playback controls, pose freezing, visibility changes, and resume timing in a real window.
+Press **Space** (or the right-click menu's **暂停播放**) to freeze playback. While paused, **→** or **.** advances exactly 1/30 second; camera controls remain available and scene clicks no longer feed. Enable **调试工具** (debug tools) in the right-click menu to show the bottom-left Pause/Resume, Next-frame, and frame-counter controls. The menu's **帮助** (Help) item opens a full guide covering interactions, camera keys, menu options, and the hamster's daily routines. `bash scripts/verify-playback.sh` checks playback controls, pose freezing, visibility changes, and resume timing in a real window.
 
 Body and limbs follow the original simulation’s articulated control points, wrist/toe trajectories, and gait phases. A smooth volume union keeps the head and torso connected as they bend; the legs and paws deform and wheel contacts stay inside the running surface.
 
@@ -68,10 +68,10 @@ The current releases are ad hoc signed and have not been signed with an Apple De
 | Hold and drag food, then release | Move it around or toss it. |
 | Click the yellow wheel center | Invite the hamster onto the wheel. |
 | Drag the top of the window | Move the window. |
-| Right-click or Control-click | Change always-on-top, size, watermark, and dark mode settings. |
+| Right-click or Control-click | Change always-on-top, size, watermark, and dark mode settings, toggle debug tools, or open help. |
 | Click the paw icon in the menu bar | Access the same settings, show/hide the hamster, or quit. |
 
-The current app menus use Simplified Chinese: **置顶 / 取消置顶** means always on top / turn off always on top, **窗口大小** means window size, **显示水印** means show watermark, and **深色模式** means dark mode.
+The current app menus use Simplified Chinese: **置顶 / 取消置顶** means always on top / turn off always on top, **窗口大小** means window size, **显示水印** means show watermark, **深色模式** means dark mode, **调试工具** means debug tools, and **帮助** means help.
 
 ## Development
 
