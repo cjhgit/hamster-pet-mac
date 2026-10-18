@@ -12,7 +12,7 @@ Want to try it before installing, or don't have a Mac? **[Play the web version](
 
 ## 3D branch
 
-This branch uses actual, deformable SceneKit / Metal meshes for the hamster, bottle, running wheel, and night lamp. The hamster retains its beige body, dark contours, cream muzzle, and outlined ears.
+This branch uses actual, deformable SceneKit / Metal meshes for the hamster, bottle, night lamp, and a barrel-plank running wheel that keeps its red rims. The hamster retains its beige body, dark contours, cream muzzle, and outlined ears.
 
 Drag to orbit, scroll or pinch to zoom, Shift-drag to pan, click to feed, and Command-drag food. Keys **0–6** select front/reset, three-quarter, right, rear, top, left, and hamster close-up.
 

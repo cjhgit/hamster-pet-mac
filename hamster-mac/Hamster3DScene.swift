@@ -185,31 +185,50 @@ import MetalKit
         node.eulerAngles.x = .pi / 2
     }
 
-    /// Closed annular mesh: the wheel has a real running surface and two red rims.
-    private func wheelTread() -> SCNGeometry {
-        let n = 160
+    /// Closed strip of the cylinder wall between two radii, spanning an angle
+    /// range: shared by the wooden planks and their dark barrel liner.
+    private func curvedStrip(innerRadius: Float, outerRadius: Float, startAngle: Float, endAngle: Float,
+                             zFront: Float, zBack: Float, segments: Int) -> SCNGeometry {
         var vertices: [SCNVector3] = [], normals: [SCNVector3] = [], indices: [Int32] = []
-        let profile: [(Float, Float)] = [(97.3, -26), (97.3, 26), (100.2, 26), (100.2, -26), (97.3, -26)]
+        let profile: [(Float, Float)] = [(innerRadius, zBack), (innerRadius, zFront), (outerRadius, zFront), (outerRadius, zBack), (innerRadius, zBack)]
         for j in 0..<profile.count {
-            for i in 0...n {
-                let a = Float(i) * 2 * .pi / Float(n)
+            for i in 0...segments {
+                let a = startAngle + (endAngle - startAngle) * Float(i) / Float(segments)
                 let (r, z) = profile[j]
                 vertices.append(SCNVector3(r * cos(a), r * sin(a), z))
                 let sign: Float = j < 2 ? -1 : 1
                 normals.append(SCNVector3(sign * cos(a), sign * sin(a), 0))
-                if j < profile.count - 1 && i < n {
-                    let k = Int32(j * (n + 1) + i), stride = Int32(n + 1)
+                if j < profile.count - 1 && i < segments {
+                    let k = Int32(j * (segments + 1) + i), stride = Int32(segments + 1)
                     indices += [k, k + 1, k + stride, k + 1, k + stride + 1, k + stride]
                 }
             }
         }
-        let geo = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices), SCNGeometrySource(normals: normals)],
-                              elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
-        // Double-sided tread is a distinct render state, not a mutation of the
-        // cached material used elsewhere when the user chooses equal colors.
-        geo.firstMaterial = material(color("wheelColor")).copy() as? SCNMaterial
-        geo.firstMaterial?.isDoubleSided = true
-        return geo
+        return SCNGeometry(sources: [SCNGeometrySource(vertices: vertices), SCNGeometrySource(normals: normals)],
+                           elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
+    }
+
+    /// Barrel-style running surface: an even ring of wooden planks like an old
+    /// water bucket; the narrow gaps between planks read as the joint lines.
+    private func buildWoodenTread(parent: SCNNode) {
+        let plankWood = NSColor(srgbRed: 0.82, green: 0.64, blue: 0.43, alpha: 1)
+        let seamWood = NSColor(srgbRed: 0.33, green: 0.24, blue: 0.16, alpha: 1)
+        let planks = 18, gap: Float = 1.8 * .pi / 180
+        let span = 2 * .pi / Float(planks) - gap
+        for i in 0..<planks {
+            let start = Float(i) * 2 * .pi / Float(planks) + gap / 2
+            // Deterministic per-plank shading keeps the joints readable without
+            // changing the texture between launches.
+            let shade: CGFloat = 1 - CGFloat((i * 37) % 7) / 7 * 0.07
+            let wood = plankWood.blended(withFraction: 1 - shade, of: seamWood) ?? plankWood
+            let geo = curvedStrip(innerRadius: 97.3, outerRadius: 100.2, startAngle: start, endAngle: start + span,
+                                  zFront: 26, zBack: -26, segments: 6)
+            geo.firstMaterial = material(wood).copy() as? SCNMaterial
+            geo.firstMaterial?.isDoubleSided = true
+            let node = SCNNode(geometry: geo)
+            node.name = "Wheel plank \(i)"
+            parent.addChildNode(node)
+        }
     }
 
     private func buildWheel() {
@@ -217,28 +236,26 @@ import MetalKit
         support.name = "Wheel stand"
         support.position = SCNVector3(27, 105, -24)
         scene.rootNode.addChildNode(support)
-        rod(SCNVector3(0, -103, -26), SCNVector3(0, 0, -26), radius: 1.4, color: color("wheelSpokeColor"), name: "Wheel rear support", parent: support)
+        // A thick wooden post carries the wheel, matching the barrel-style tread.
+        rod(SCNVector3(0, -103, -26), SCNVector3(0, 0, -26), radius: 3.2, color: NSColor(srgbRed: 0.60, green: 0.44, blue: 0.28, alpha: 1), name: "Wheel rear support", parent: support)
         rod(SCNVector3(-24, -103, -26), SCNVector3(24, -103, -26), radius: 2, color: ink, name: "Wheel stand foot", parent: support)
         support.addChildNode(wheel)
         wheel.name = "Running wheel"
-        let tread = SCNNode(geometry: wheelTread())
-        tread.name = "Closed cylindrical running surface"
-        wheel.addChildNode(tread)
+        buildWoodenTread(parent: wheel)
         for z: CGFloat in [-26, 26] {
             ring(radius: 100, tube: 3, color: ink, name: "Wheel rim border", z: z, parent: wheel)
             ring(radius: 100, tube: 1.85, color: color("wheelOuterColor"), name: "Red wheel rim", z: z + (z > 0 ? 1.6 : -1.6), parent: wheel)
         }
-        // One fine spoke preserves the original front view; the rear has a stable cross brace.
-        rod(SCNVector3(0, 0, 26), SCNVector3(-22, 95, 26), radius: 0.85, color: color("wheelSpokeColor"), name: "Front spoke", parent: wheel)
+        // The front stays open so the hamster stays in view; the rear cross brace
+        // carries the tread with proper wooden-spoke thickness.
         for angle: Float in [0, 2.0944, 4.1888] {
-            rod(SCNVector3(0, 0, -26), SCNVector3(98 * cos(angle), 98 * sin(angle), -26), radius: 0.4, color: color("wheelSpokeColor"), name: "Rear spoke", parent: wheel)
+            rod(SCNVector3(0, 0, -26), SCNVector3(98 * cos(angle), 98 * sin(angle), -26), radius: 1.8, color: color("wheelSpokeColor"), name: "Rear spoke", parent: wheel)
         }
-        for z: CGFloat in [-29, 29] {
-            let hub = SCNCylinder(radius: 8, height: 5)
-            let node = mesh(hub, color: color("wheelCenterColor"), name: "wheelHub", parent: support, at: SCNVector3(0, 0, z), outline: 0.13)
-            node.eulerAngles.x = .pi / 2
-        }
-        rod(SCNVector3(0, 0, -36), SCNVector3(0, 0, 26), radius: 2, color: ink, name: "Wheel axle", parent: support)
+        // A single hub on the rear side, moved in front of the post so the post
+        // no longer cuts across it from the front view.
+        let hub = SCNCylinder(radius: 8, height: 5)
+        let hubNode = mesh(hub, color: color("wheelCenterColor"), name: "wheelHub", parent: support, at: SCNVector3(0, 0, -22), outline: 0.13)
+        hubNode.eulerAngles.x = .pi / 2
         flattenGeometry(in: wheel)
         flattenGeometry(in: support, excluding: [wheel])
     }
