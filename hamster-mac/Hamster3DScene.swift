@@ -70,8 +70,8 @@ import MetalKit
         buildLamp()
         buildHamster()
         update(night: false)
-        yaw = -0.18
-        pitch = 0.08
+        yaw = 0
+        pitch = 0
         updateCamera()
     }
 
