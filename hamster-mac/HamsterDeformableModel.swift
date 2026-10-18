@@ -14,6 +14,7 @@ import Metal
     private let features: [Surface]
     private let rims: [Surface]
     private let mouth: [Surface]
+    private let eyeHighlights: [SCNNode]
     private let tail: Surface
     private let heldFood = SCNNode()
     private let headFeatures = SCNNode()
@@ -352,6 +353,24 @@ import Metal
         paws = (0..<4).map { Surface(name: "Deforming paw \($0)", materials: [mat("feetColor")], ink: inkM, outline: 1.25) }
         features = (0..<4).map { Surface(name: ["Right eye", "Left eye", "Right ear", "Left ear"][$0], materials: [mat($0 < 2 ? "eyeColor" : "earColor")], ink: inkM, outline: 0) }
         rims = (0..<2).map { Surface(name: "Black ear rim \($0)", materials: [inkM], ink: inkM, outline: 0) }
+        // A small constant-white sparkle rides each eye lens, giving the bead
+        // eyes a catchlight; it scales with the eye so blinks hide it too.
+        let sparkle = SCNMaterial()
+        sparkle.diffuse.contents = NSColor(srgbRed: 0.78, green: 0.78, blue: 0.78, alpha: 1)
+        sparkle.ambient.contents = sparkle.diffuse.contents
+        sparkle.lightingModel = .constant
+        sparkle.specular.contents = NSColor.black
+        var highlights: [SCNNode] = []
+        for index in 0..<2 {
+            let sphere = SCNSphere(radius: 1)
+            sphere.segmentCount = 14
+            sphere.materials = [sparkle]
+            let node = SCNNode(geometry: sphere)
+            node.name = "Eye highlight \(index)"
+            features[index].node.addChildNode(node)
+            highlights.append(node)
+        }
+        eyeHighlights = highlights
         mouth = (0..<3).map { Surface(name: "Mouth stroke \($0)", materials: [inkM], ink: inkM, outline: 0) }
         tail = Surface(name: "Small flexible tail", materials: [mat("tailColor")], ink: inkM, outline: 0.45)
         root.name = "Original hamster articulation"
@@ -516,6 +535,19 @@ import Metal
                 let local = contour.map { $0 - center }
                 setPosition(features[feature].node, center)
                 lens(features[feature], contour: local, depth: feature < 2 ? 0.7 : 1.5)
+                if feature < 2 {
+                    // Catchlight: upper-outer point on the eye dome, sized by the
+                    // eye itself so blinking shrinks it away naturally.
+                    let radius = local.reduce(Float(0)) { $0 + simd_length($1) } / Float(local.count)
+                    let side: Float = center.x >= 0 ? 1 : -1
+                    var normal = V.zero
+                    for i in local.indices { normal += simd_cross(local[i], local[(i + 1) % local.count]) }
+                    normal = simd_length_squared(normal) > 1e-8 ? simd_normalize(normal) : V(0, 0, 1)
+                    if simd_dot(normal, center) < 0 { normal = -normal }
+                    let highlight = eyeHighlights[feature]
+                    highlight.simdPosition = normal * 0.18 + V(side * radius * 0.30, radius * 0.32, 0)
+                    highlight.simdScale = SIMD3<Float>(repeating: radius * 0.15)
+                }
                 if feature >= 2 {
                     setPosition(rims[feature - 2].node, center)
                     tube(rims[feature - 2], path: local + [local[0]], radius: 0.48, closed: true)
