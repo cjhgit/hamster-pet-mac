@@ -770,6 +770,8 @@ final class HamsterView: NSView, NSMenuItemValidation {
         releaseFood()
         let menu = makeSettingsMenu()
         menu.addItem(.separator())
+        let restart = menu.addItem(withTitle: "重启应用", action: #selector(restartApp(_:)), keyEquivalent: "")
+        restart.target = self
         let close = menu.addItem(withTitle: "关闭窗口", action: #selector(closeWindow(_:)), keyEquivalent: "")
         close.target = self
         return menu
@@ -871,6 +873,20 @@ final class HamsterView: NSView, NSMenuItemValidation {
     }
 
     @objc private func closeWindow(_ sender: NSMenuItem) { window?.close() }
+
+    /// 重启应用：先用 `open -n` 拉起新实例，再退出当前进程。
+    @objc private func restartApp(_ sender: NSMenuItem) {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        task.arguments = ["-n", Bundle.main.bundlePath]
+        do {
+            try task.run()
+        } catch {
+            NSLog("重启应用失败：\(error.localizedDescription)")
+            return
+        }
+        NSApp.terminate(nil)
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
