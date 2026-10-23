@@ -168,16 +168,10 @@ import MetalKit
         let root = SCNNode()
         root.name = "Habitat"
         scene.rootNode.addChildNode(root)
-        _ = box(SCNVector3(282, 3, 138), radius: 1.5, color: ink, name: "Habitat base rim", parent: root, at: SCNVector3(0, -2, 0), outline: 0)
-        _ = box(SCNVector3(278, 1, 134), radius: 0.4, color: color("bgColor"), name: "Habitat floor", parent: root, at: SCNVector3(0, 0, 0), outline: 0)
-        // A closed, extruded rounded frame preserves the original silhouette.
-        let framePath = NSBezierPath(roundedRect: .init(x: -141, y: -1, width: 282, height: 212), xRadius: 5, yRadius: 5)
-        let inner = NSBezierPath(roundedRect: .init(x: -139, y: 1, width: 278, height: 208), xRadius: 4, yRadius: 4)
-        framePath.append(inner.reversed)
-        let frameGeometry = SCNShape(path: framePath, extrusionDepth: 1.8)
-        frameGeometry.chamferRadius = 0.2
-        _ = mesh(frameGeometry, color: ink, name: "Rounded habitat rear frame", parent: root, at: .init(0, 0, -64))
-        flattenGeometry(in: root)
+        let floorColor = NSColor(srgbRed: 0.72, green: 0.70, blue: 0.65, alpha: 1)
+        let floor = SCNCylinder(radius: 210, height: 1)
+        floor.radialSegmentCount = 128
+        _ = mesh(floor, color: floorColor, name: "Habitat floor", parent: root)
     }
 
     private func ring(radius: CGFloat, tube: CGFloat, color: NSColor, name: String, z: CGFloat, parent: SCNNode) {
