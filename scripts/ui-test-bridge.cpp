@@ -1,6 +1,10 @@
 // This diagnostic bridge is compiled only by snapshot-native.sh, never by Xcode.
 #include "../hamster-mac/Native/HamsterEngine.cpp"
 extern "C" int HamsterTestFoodCount(){return int(number(G(G(E->root,P_freshFood),P_length)));}
+extern "C" void HamsterTestClearFood(){
+    V fresh=G(E->root,P_freshFood);
+    while(number(G(fresh,P_length))>0)call(E->root,P_recycleFood,{indexGet(fresh,V(0))});
+}
 extern "C" int HamsterTestDragging(){return bool(G(G(E->root,P_food),P_drag));}
 extern "C" double HamsterTestFoodX(){return number(G(G(G(E->root,P_food),P_pos),P_x));}
 extern "C" void HamsterTestStep(){HamsterEngineStep(E,1000.0/30);}
@@ -9,6 +13,7 @@ extern "C" int HamsterTestWatermarkVisible(){return bool(G(G(E->root,P_txt),P__v
 extern "C" HamsterSceneState HamsterEngineGetSceneStateForTest(){return HamsterEngineGetSceneState(E);}
 static V testIdleDecision(V,const Args&){return {};}
 extern "C" void HamsterTestConfigureScenario(int scenario,double heading){
+    E->pettingMilliseconds=0;
     V h=G(E->root,P_ham);
     R(h,P_decideWhatToDo)=function(scenario==0?testIdleDecision:Hamster_decideWhatToDo);
     R(h,P_runAt)=V(1e9);

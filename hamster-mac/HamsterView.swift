@@ -144,6 +144,7 @@ final class HamsterHelpWindowController: NSWindowController {
         row("⌘ + 拖动", "播放时直接把食物拖到仓鼠面前")
         row("点击黄色轮心", "邀请仓鼠上跑轮跑一会儿")
         row("点击水瓶底部或饮水嘴", "引导仓鼠去喝水")
+        row("点击仓鼠身体", "抚摸它，先减速收步，再眯眼停留 3 秒；再次点击可延长")
 
         section("视角与播放")
         row("拖动", "旋转视角")
@@ -1058,6 +1059,8 @@ final class HamsterView: NSView, NSMenuItemValidation {
                     HamsterEngineMouse(engine, 167, 105, 2)
                 case .water:
                     HamsterEngineRequestDrink(engine)
+                case .hamster:
+                    HamsterEnginePet(engine)
                 case nil:
                     if let p = scene3D.stagePoint(scenePoint(event)), isInStage(p) {
                         HamsterEngineMouse(engine, p.x, p.y, 1)

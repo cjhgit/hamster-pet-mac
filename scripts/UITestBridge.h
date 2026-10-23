@@ -1,5 +1,6 @@
 #include "../hamster-mac/Native/HamsterEngine.h"
 int HamsterTestFoodCount(void);
+void HamsterTestClearFood(void);
 int HamsterTestDragging(void);
 double HamsterTestFoodX(void);
 void HamsterTestStep(void);

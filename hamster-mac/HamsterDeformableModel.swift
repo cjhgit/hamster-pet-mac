@@ -601,6 +601,7 @@ import Metal
                     normal = simd_length_squared(normal) > 1e-8 ? simd_normalize(normal) : V(0, 0, 1)
                     if simd_dot(normal, center) < 0 { normal = -normal }
                     let highlight = eyeHighlights[feature]
+                    setHidden(highlight, state.eyeOpen < 0.3)
                     highlight.simdPosition = normal * 0.18 + V(side * radius * 0.30, radius * 0.32, 0)
                     highlight.simdScale = SIMD3<Float>(repeating: radius * 0.15)
                 }

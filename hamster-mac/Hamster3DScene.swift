@@ -312,7 +312,7 @@ import MetalKit
         let x = Float(state.x) - 140
         // Pose, heading, wheel banking and footfalls come directly from the original engine.
         let poseFrame = Int(HamsterEngineGetFrameCount(engine))
-        if lastPoseFrame != poseFrame {
+        if lastPoseFrame != poseFrame && state.petting != 2 {
             hamsterDepth += ((state.onWheel != 0 ? -24 : 42) - hamsterDepth) * 0.18
             lastPoseFrame = poseFrame
         }
@@ -468,7 +468,7 @@ import MetalKit
         return NSPoint(x: CGFloat(x), y: CGFloat(y))
     }
 
-    enum InteractionTarget { case wheel, water }
+    enum InteractionTarget { case wheel, water, hamster }
 
     func interactionTarget(at point: NSPoint) -> InteractionTarget? {
         let halfHeight = Float(camera.camera?.orthographicScale ?? 109)
@@ -480,9 +480,19 @@ import MetalKit
         let hits = scene.rootNode.hitTestWithSegment(from: .init(origin.x, origin.y, origin.z), to: .init(end.x, end.y, end.z),
                                                     options: [SCNHitTestOption.searchMode.rawValue: SCNHitTestSearchMode.closest.rawValue,
                                                               SCNHitTestOption.ignoreHiddenNodes.rawValue: true])
+        // SceneKit cannot ray-test the Metal-generated skin buffers. Test the
+        // same authored surface on CPU, preserving nearer scene occlusion.
+        let localStart = hamster.convertPosition(SCNVector3(origin), from: nil)
+        let localEnd = hamster.convertPosition(SCNVector3(end), from: nil)
+        let bodyHit = HamsterEngineHitBodySegment(engine,
+            .init(x: Double(localStart.x), y: Double(localStart.y), z: Double(localStart.z), curve: 0),
+            .init(x: Double(localEnd.x), y: Double(localEnd.y), z: Double(localEnd.z), curve: 0))
+        let nearest = hits.first.map { simd_distance(origin, SIMD3<Float>($0.worldCoordinates)) } ?? .infinity
+        if bodyHit >= 0 && Float(bodyHit) * simd_distance(origin, end) < nearest { return .hamster }
         return hits.first.flatMap { hit -> InteractionTarget? in
             var node: SCNNode? = hit.node
             while let current = node {
+                if current === hamster { return .hamster }
                 if current.name == "wheelHub" { return .wheel }
                 // Use bottle-local height so the bottom, cap and nozzle stay
                 // clickable after orbiting, zooming or flattening geometry.

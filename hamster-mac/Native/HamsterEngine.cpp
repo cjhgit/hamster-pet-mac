@@ -82,6 +82,9 @@ struct Engine {
     std::unordered_map<int,Timer> timers;
     uint32_t seed; int timerID=0,frames=0;
     double time=0;
+    double pettingMilliseconds=0;
+    double pettingBrakeMilliseconds=0,pettingStrideScale=1;
+    bool pettingSettled=false;
     std::vector<HamsterVertex> metalVertices;
     std::vector<HamsterDrawCommand> metalCommands;
     std::vector<HamsterBodyVertex> bodyVertices;
@@ -271,6 +274,42 @@ V builtinCancel(V,const Args& a){E->timers.erase(int(number(arg(a,0))));return {
 
 #include "Original.hpp"
 
+V petIdleDecision(V,const Args&){return {};}
+V petStepTo(V leg,const Args& args){
+    V target=arg(args,0);
+    Args braking=args;
+    braking[0]=object({{P_x,V(number(G(target,P_x))*E->pettingStrideScale)},
+                       {P_z,V(number(G(target,P_z))*E->pettingStrideScale)}});
+    return LegV2_stepTo(leg,braking);
+}
+void settleForPetting(V h,double elapsed){
+    E->pettingBrakeMilliseconds+=elapsed;
+    double t=std::clamp(E->pettingBrakeMilliseconds/700.0,0.0,1.0);
+    E->pettingStrideScale=1-t*t*(3-2*t);
+    // Finish existing footfalls, gradually shorten new strides, and use the
+    // original tired-wheel physics to reduce cadence instead of freezing it.
+    V decision=G(h,P_decideWhatToDo),tired=G(h,P_isTired),runAt=G(h,P_runAt),getOff=G(h,P_getOffWheel);
+    const int legs[]={P_legFR,P_legFL,P_legRR,P_legRL};
+    V steps[4];
+    for(int i=0;i<4;i++){V leg=G(h,legs[i]);steps[i]=G(leg,P_stepTo);R(leg,P_stepTo)=function(petStepTo);}
+    R(h,P_decideWhatToDo)=function(petIdleDecision);
+    bool wheel=bool(G(h,P_isOnWheel));
+    if(wheel){R(h,P_isTired)=V(true);R(h,P_runAt)=V(1e12);R(h,P_getOffWheel)=V(false);}
+    double x=number(G(h,P__x)),y=number(G(h,P__y));
+    call(h,P_onEnterFrame,{});
+    R(h,P_decideWhatToDo)=decision;R(h,P_isTired)=tired;R(h,P_runAt)=runAt;R(h,P_getOffWheel)=getOff;
+    double lift=0;
+    for(int i=0;i<4;i++){V leg=G(h,legs[i]);R(leg,P_stepTo)=steps[i];lift=std::max(lift,std::abs(number(G(leg,P_currStepHt))));}
+    double movement=hypot(number(G(h,P__x))-x,number(G(h,P__y))-y);
+    bool wheelStopped=!wheel||(number(G(h,P_legVel))<.001&&std::abs(number(G(E->root,P_wheelVel)))<.2);
+    if(t>=1&&movement<.08&&lift<.08&&wheelStopped)E->pettingSettled=true;
+}
+double pettingEyeFraction(double normal){
+    if(E->pettingMilliseconds<=0)return normal;
+    double t=std::clamp(E->pettingBrakeMilliseconds/700.0,0.0,1.0),relax=t*t*(3-2*t);
+    return normal*(1-relax)+.12*relax;
+}
+
 void initializeRuntime() {
     E->globals=object({});E->clipPrototype=object({});E->arrayPrototype=object({});
     for(auto pair:std::initializer_list<std::pair<int,Fn>>{
@@ -411,9 +450,30 @@ void HamsterEngineDestroy(void *engine){delete static_cast<Engine*>(engine);if(E
 void HamsterEngineSetColor(void *engine,const char *name,uint32_t color){E=static_cast<Engine*>(engine);char hex[7];snprintf(hex,sizeof(hex),"%06X",color&0xffffff);R(E->root,E->key(std::string("up_")+name))=string(hex);}
 void HamsterEngineStart(void *engine){E=static_cast<Engine*>(engine);initializeTimeline(E->root,{});HamsterEngineStep(engine,0);E->collect();}
 void HamsterEngineSetWatermarkVisible(void *engine,int visible){E=static_cast<Engine*>(engine);R(G(E->root,P_txt),P__visible)=V(visible!=0);}
-void HamsterEngineStep(void *engine,double elapsed){E=static_cast<Engine*>(engine);advance(std::max(0.0,elapsed));call(E->root,P_onEnterFrame,{});call(G(E->root,P_ham),P_onEnterFrame,{});if(++E->frames%30==0)E->collect();}
+void HamsterEngineStep(void *engine,double elapsed){
+    E=static_cast<Engine*>(engine);
+    elapsed=std::max(0.0,elapsed);
+    V h=G(E->root,P_ham);
+    const bool petting=E->pettingMilliseconds>0;
+    // Keep world physics running while the hamster brakes and plants its feet.
+    // Only hold the pose after it has actually settled; defer its callbacks.
+    if(petting)for(auto &entry:E->timers)if(entry.second.target.o==h.o)entry.second.at+=elapsed;
+    advance(elapsed);
+    call(E->root,P_onEnterFrame,{});
+    if(!petting)call(h,P_onEnterFrame,{});
+    else if(!E->pettingSettled)settleForPetting(h,elapsed);
+    else E->pettingMilliseconds=std::max(0.0,E->pettingMilliseconds-elapsed);
+    if(++E->frames%30==0)E->collect();
+}
+void HamsterEnginePet(void *engine){
+    E=static_cast<Engine*>(engine);
+    call(G(E->root,P_ham),P_wakeUp,{});
+    if(E->pettingMilliseconds<=0){E->pettingBrakeMilliseconds=0;E->pettingSettled=false;}
+    E->pettingMilliseconds=3000;
+}
 void HamsterEngineRequestDrink(void *engine){
     E=static_cast<Engine*>(engine);
+    E->pettingMilliseconds=0;
     V h=G(E->root,P_ham);
     if(bool(G(h,P_drinking)))return;
     call(h,P_wakeUp,{});
@@ -426,7 +486,7 @@ void HamsterEngineRequestDrink(void *engine){
     R(h,P_waterLevel)=V(0);
     if(!bool(G(h,P_eating))&&!bool(G(h,P_cleaning)))Hamster_decideWhatToDo(h,{});
 }
-void HamsterEngineMouse(void *engine,double x,double y,int action){E=static_cast<Engine*>(engine);if(action!=2){R(E->root,P__xmouse)=V(x);R(E->root,P__ymouse)=V(y);}if(action==0)call(E->root,P_onMouseMove,{});if(action==1){call(E->root,P_onMouseMove,{});call(E->root,P_onMouseDown,{});}if(action==2)call(E->root,P_onMouseUp,{});}
+void HamsterEngineMouse(void *engine,double x,double y,int action){E=static_cast<Engine*>(engine);if(action!=2){R(E->root,P__xmouse)=V(x);R(E->root,P__ymouse)=V(y);}if(action==0)call(E->root,P_onMouseMove,{});if(action==1){E->pettingMilliseconds=0;call(E->root,P_onMouseMove,{});call(E->root,P_onMouseDown,{});}if(action==2)call(E->root,P_onMouseUp,{});}
 void HamsterEnginePurgeRenderCache(void *engine){
     E=static_cast<Engine*>(engine);
     for(int key:{P_bg,P_wheel}) {
@@ -464,9 +524,10 @@ HamsterSceneState HamsterEngineGetSceneState(void *engine){
     auto n=[&](V v,int key,double fallback=0.0){double x=number(G(v,key));return std::isfinite(x)?x:fallback;};
     return {n(h,P__x),n(h,P__y),n(h,P_ang),n(h,P_standToAng,6.283185307179586),
         n(h,P_headAng),n(h,P_headAngZ),n(E->root,P_wheelAng),n(h,P_angVel),
-        n(h,P_eyesCloseFrac,1),n(h,P_waterLevel,10),
+        pettingEyeFraction(n(h,P_eyesCloseFrac,1)),n(h,P_waterLevel,10),
         bool(G(h,P_isOnWheel)),bool(G(h,P_sleeping)),bool(G(h,P_eating)),bool(G(h,P_cleaning)),
-        bool(G(h,P_dest)) || (bool(G(h,P_isOnWheel)) && !bool(G(h,P_isTired))),n(h,P__rotation),n(h,P_legVel)};
+        !(E->pettingMilliseconds>0&&E->pettingSettled)&&(bool(G(h,P_dest)) || (bool(G(h,P_isOnWheel)) && !bool(G(h,P_isTired)))),n(h,P__rotation),n(h,P_legVel),
+        E->pettingMilliseconds>0?(E->pettingSettled?2:1):0};
 }
 
 namespace {
@@ -516,7 +577,7 @@ HamsterRigPoint HamsterEngineGetRigFeatureLocalPoint(void *engine,int feature,in
     V center=G(h,eye?P_eyePt:P_earPt);
     double side=(feature%2==0?1:-1),gap=rigNumber(h,eye?P_eyeGap:P_earGap);
     double x=rigNumber(p,P_x)+rigNumber(center,P_x),y=rigNumber(p,P_y),z=rigNumber(p,P_z)+side*gap;
-    if(eye)y*=std::clamp(rigNumber(h,P_eyesCloseFrac,1),.03,1.0);
+    if(eye)y*=pettingEyeFraction(std::clamp(rigNumber(h,P_eyesCloseFrac,1),.03,1.0));
     y+=rigNumber(center,P_y);
     return {x,-y,-z,bool(G(p,P_curve))};
 }

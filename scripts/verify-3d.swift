@@ -164,7 +164,8 @@ import Darwin
             let p = view.convert(renderer.view.convert(renderer.project(world), to: nil), from: nil)
             let movement = event(.mouseMoved, p)
             view.cursorUpdate(with: movement)
-            precondition(NSCursor.current == cursor, "Cursor entry must match the visible interaction target")
+            precondition(NSCursor.current == cursor,
+                         "Cursor entry mismatch: yaw \(renderer.yaw), pitch \(renderer.pitch), target \(String(describing: renderer.interactionTarget(at: renderer.project(world))))")
             view.mouseMoved(with: movement)
             precondition(NSCursor.current == cursor, "Hover cursor must match the visible interaction target")
         }
@@ -221,6 +222,123 @@ import Darwin
                          "Bottle clicks must not feed or drag food")
         }
         print("PASS: bottle/wheel hover cursors after orbit/zoom/pan, pause guard, idle/sleep/wheel to completed drinking")
+        HamsterTestClearFood()
+        for scenario: Int32 in [0, 1, 2] {
+            HamsterTestConfigureScenario(scenario, 0)
+            renderer.update(night: false)
+            renderer.preset(0)
+            let localCenter = (renderer.hamsterLandmarks[0] + renderer.hamsterLandmarks[1]) * 0.5
+            let body = renderer.hamster.convertPosition(SCNVector3(localCenter), to: nil)
+            precondition(renderer.interactionTarget(at: renderer.project(body)) == .hamster,
+                         "Visible body must be clickable, including on the wheel")
+            if scenario == 0 {
+                for preset in [1, 3, 4] {
+                    renderer.preset(preset)
+                    hover(body, cursor: .pointingHand)
+                }
+                renderer.preset(0)
+                let obstruction = SCNNode(geometry: SCNBox(width: 15, height: 15, length: 5, chamferRadius: 0))
+                obstruction.simdPosition = SIMD3<Float>(body) - renderer.camera.simdWorldFront * 70
+                obstruction.simdOrientation = renderer.camera.simdWorldOrientation
+                renderer.scene.rootNode.addChildNode(obstruction)
+                // SceneKit tessellates newly added primitive geometry lazily.
+                _ = renderer.snapshot(size: .init(width: 32, height: 32))
+                hover(body, cursor: .arrow)
+                precondition(renderer.interactionTarget(at: renderer.project(body)) == nil,
+                             "Occluded bodies must not be clickable")
+                obstruction.removeFromParentNode()
+                _ = renderer.snapshot(size: .init(width: 32, height: 32))
+            }
+            hover(body, cursor: .pointingHand)
+            let p = view.convert(renderer.view.convert(renderer.project(body), to: nil), from: nil)
+            let food = HamsterTestFoodCount()
+            // A camera drag over the body must not turn into a pet.
+            view.mouseDown(with: event(.leftMouseDown, p))
+            view.mouseDragged(with: event(.leftMouseDragged, .init(x: p.x + 12, y: p.y)))
+            view.mouseUp(with: event(.leftMouseUp, p))
+            precondition(HamsterEngineGetSceneStateForTest().petting == 0)
+            renderer.preset(0)
+            func pet() {
+                renderer.update(night: false)
+                let center = (renderer.hamsterLandmarks[0] + renderer.hamsterLandmarks[1]) * 0.5
+                let world = renderer.hamster.convertPosition(SCNVector3(center), to: nil)
+                let current = view.convert(renderer.view.convert(renderer.project(world), to: nil), from: nil)
+                view.mouseDown(with: event(.leftMouseDown, current))
+                view.mouseUp(with: event(.leftMouseUp, current))
+            }
+            if scenario == 0 {
+                let pause = view.makeSettingsMenu()
+                pause.performActionForItem(at: pause.index(of: pause.item(withTitle: "暂停播放")!))
+                hover(body, cursor: .arrow)
+                pet()
+                precondition(HamsterEngineGetSceneStateForTest().petting == 0, "Paused clicks must not pet")
+                let resume = view.makeSettingsMenu()
+                resume.performActionForItem(at: resume.index(of: resume.item(withTitle: "继续播放")!))
+            }
+            if scenario == 2 { precondition(HamsterEngineGetSceneStateForTest().onWheel != 0) }
+            let beforePet = HamsterEngineGetSceneStateForTest()
+            pet()
+            precondition(HamsterEngineGetSceneStateForTest().petting == 1,
+                         "Petting must begin with braking, not a frozen pose")
+            var brakingFrames = 0
+            var firstMovement = 0.0, lastMovement = 0.0
+            var earlyCadence = 0.0, lateCadence = 0.0
+            for frame in 0..<180 {
+                let previous = HamsterEngineGetSceneStateForTest()
+                HamsterTestStep()
+                renderer.update(night: false)
+                let braking = HamsterEngineGetSceneStateForTest()
+                let movement = hypot(braking.x - previous.x, braking.y - previous.y)
+                precondition(movement < 10, "Braking must not teleport the hamster")
+                if frame == 0 {
+                    firstMovement = movement
+                    if scenario == 1 { precondition(movement > 0.1, "Walking must retain its initial momentum") }
+                    if scenario == 2 {
+                        precondition(braking.legPhase != previous.legPhase && braking.speed > 0 && braking.speed < beforePet.speed,
+                                     "Running must decelerate, not stop on the first frame")
+                    }
+                }
+                if frame < 5 { earlyCadence += abs(braking.legPhase - previous.legPhase) }
+                if frame >= 20 && frame < 25 { lateCadence += abs(braking.legPhase - previous.legPhase) }
+                brakingFrames += 1
+                lastMovement = movement
+                if braking.petting == 2 { break }
+            }
+            let state = HamsterEngineGetSceneStateForTest()
+            precondition(brakingFrames > 10 && state.petting == 2 && state.moving == 0 && state.eyeOpen < 0.2,
+                         "The hamster must settle its steps before relaxing")
+            if scenario != 0 { precondition(lastMovement < firstMovement * 0.2, "Momentum must decay before holding") }
+            if scenario == 2 { precondition(lateCadence < earlyCadence * 0.4 && state.speed < 0.001) }
+            let pose = renderer.hamsterLandmarks, position = renderer.hamster.simdPosition
+            for frame in 0..<60 {
+                HamsterTestStep()
+                renderer.update(night: false)
+                let held = HamsterEngineGetSceneStateForTest()
+                precondition(held.petting != 0 && held.x == state.x && held.y == state.y && held.legPhase == state.legPhase)
+                precondition(renderer.hamsterLandmarks == pose && renderer.hamster.simdPosition == position,
+                             "Petting must hold the whole pose, including wheel gait and depth")
+                if frame == 0 {
+                    for index in 0..<2 {
+                        precondition(renderer.hamster.childNode(withName: "Eye highlight \(index)", recursively: true)!.isHidden,
+                                     "Squinting must hide highlights outside the closed eyes")
+                    }
+                    renderer.inspectHamster(yaw: 0, pitch: 0.15)
+                    try save("petting-\(scenario)")
+                    renderer.preset(0)
+                }
+            }
+            pet()
+            for _ in 0..<60 { HamsterTestStep() }
+            precondition(HamsterEngineGetSceneStateForTest().petting != 0, "Repeated petting must extend the hold")
+            for _ in 0..<32 { HamsterTestStep() }
+            precondition(HamsterEngineGetSceneStateForTest().petting == 0, "Activity must resume after petting")
+            precondition(HamsterTestFoodCount() == food && HamsterTestDragging() == 0, "Petting must not feed")
+            if scenario == 2 {
+                precondition(HamsterEngineGetSceneStateForTest().legPhase != state.legPhase,
+                             "Wheel gait must resume after petting ends")
+            }
+        }
+        print("PASS: petting hover/click, continuous walk/wheel braking, planted relaxed poses, repeat extension and recovery")
         let settings = view.makeSettingsMenu()
         precondition(settings.item(withTitle: "3D 视角")?.submenu?.items.count == 7)
         settings.performActionForItem(at: 3)

@@ -168,6 +168,34 @@ struct Field {
 };
 }
 
+double HamsterEngineHitBodySegment(void *engine,HamsterRigPoint from,HamsterRigPoint to){
+    using namespace hamster_body;
+    E=static_cast<Engine*>(engine);
+    Field field(engine);
+    Vec start=point(from),delta=point(to)-start;
+    double distance=length(delta);
+    if(distance<1e-8)return -1;
+    Vec direction=delta/distance,offset=start-field.center;
+    double radius=std::max(field.torsoLength+32,length(field.head-field.center)+40);
+    double b=dot(offset,direction),discriminant=b*b-dot(offset,offset)+radius*radius;
+    if(discriminant<0)return -1;
+    double begin=std::max(0.0,-b-sqrt(discriminant)),end=std::min(distance,-b+sqrt(discriminant));
+    if(begin>end)return -1;
+    field.prepare();
+    // This field is an authored implicit surface, not an exact distance field.
+    // Fixed small samples avoid stepping over the tapered neck or muzzle.
+    for(double t=begin;t<=end;t+=.6){
+        if(field(start+direction*t)>0)continue;
+        double lo=std::max(begin,t-.6),hi=t;
+        for(int i=0;i<8;i++){
+            double mid=(lo+hi)*.5;
+            if(field(start+direction*mid)>0)lo=mid;else hi=mid;
+        }
+        return hi/distance;
+    }
+    return -1;
+}
+
 HamsterBodyField HamsterEngineBuildBodyField(void *engine){
     using namespace hamster_body;
     E=static_cast<Engine*>(engine);
