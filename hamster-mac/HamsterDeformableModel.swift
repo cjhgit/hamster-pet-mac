@@ -35,7 +35,8 @@ import Metal
         return V(cos(a), sin(a), 0)
     }
     private static let legOutline: [Float] = (0...12).flatMap { j in
-        let t = min(1, max(0, (Float(j) / 12 - 0.35) / 0.65))
+        // Fade only the buried root; exposed legs need a full cartoon rim.
+        let t = min(1, Float(j) / 12 / 0.30)
         return Array(repeating: t * t * (3 - 2 * t), count: 24)
     } + [0, 1]
     private static let pawCircle: [SIMD2<Float>] = (0..<24).map {
@@ -317,7 +318,7 @@ import Metal
             node.geometry = geometry
             let shell = SCNGeometry(sources: sources, elements: [hullElement])
             shell.materials = hull.geometry!.materials
-            // Largest authored outline in this batch is the 1.25-unit paw rim.
+            // Pad for the limb and paw rims (up to 1.1 units).
             shell.boundingBox = (.init(lo.x - 1.3, lo.y - 1.3, lo.z - 1.3), .init(hi.x + 1.3, hi.y + 1.3, hi.z + 1.3))
             hull.geometry = shell
         }
@@ -362,11 +363,11 @@ import Metal
         _geometry.normal = normalize(mix(coatNormal, _geometry.normal, 0.12));
         """]
         torso = Surface(name: "Hamster deforming skin", materials: [coat], ink: inkM, outline: 1.30, silhouetteOnly: true)
-        limbs = (0..<4).map { Surface(name: ["Right foreleg", "Left foreleg", "Right hindleg", "Left hindleg"][$0], materials: [bodyM], ink: inkM, outline: 0.45, weightedOutline: true) }
+        limbs = (0..<4).map { Surface(name: ["Right foreleg", "Left foreleg", "Right hindleg", "Left hindleg"][$0], materials: [bodyM], ink: inkM, outline: 1.10, weightedOutline: true) }
         legCreases = (0..<4).map { Surface(name: "Running flank crease \($0)", materials: [inkM], ink: inkM, outline: 0) }
         // Continue the body's coat all the way to the toes. A separate paw tint
         // reads as a mismatched patch under the cool night lighting.
-        paws = (0..<4).map { Surface(name: "Deforming paw \($0)", materials: [bodyM], ink: inkM, outline: 0.35) }
+        paws = (0..<4).map { Surface(name: "Deforming paw \($0)", materials: [bodyM], ink: inkM, outline: 1.00) }
         features = (0..<4).map { Surface(name: ["Right eye", "Left eye", "Right ear", "Left ear"][$0], materials: [mat($0 < 2 ? "eyeColor" : "earColor")], ink: inkM, outline: 0) }
         rims = (0..<2).map { Surface(name: "Black ear rim \($0)", materials: [inkM], ink: inkM, outline: 0) }
         // A small constant-white sparkle rides each eye lens, giving the bead
