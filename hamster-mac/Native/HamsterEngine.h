@@ -11,6 +11,7 @@ void HamsterEngineSetColor(void *engine, const char *name, uint32_t color);
 void HamsterEngineStart(void *engine);
 void HamsterEngineSetWatermarkVisible(void *engine, int visible);
 void HamsterEngineStep(void *engine, double elapsedMilliseconds);
+void HamsterEngineRequestDrink(void *engine);
 int HamsterEngineGetFrameCount(void *engine);
 double HamsterEngineGetElapsedMilliseconds(void *engine);
 // Read-only simulation data. World geometry is built independently by SceneKit.

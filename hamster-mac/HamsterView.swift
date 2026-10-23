@@ -143,6 +143,7 @@ final class HamsterHelpWindowController: NSWindowController {
         row("按住食物拖动再松开", "移动或抛出食物")
         row("⌘ + 拖动", "播放时直接把食物拖到仓鼠面前")
         row("点击黄色轮心", "邀请仓鼠上跑轮跑一会儿")
+        row("点击水瓶底部或饮水嘴", "引导仓鼠去喝水")
 
         section("视角与播放")
         row("拖动", "旋转视角")
@@ -899,13 +900,16 @@ final class HamsterView: NSView, NSMenuItemValidation {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let mouseTracking { removeTrackingArea(mouseTracking) }
-        let tracking = NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
+        let tracking = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
         addTrackingArea(tracking)
         mouseTracking = tracking
     }
 
     override func resetCursorRects() {
         super.resetCursorRects()
+        // The 3D view uses the same ray hit test for hovering and clicking.
+        // Fixed canvas rectangles only match the original 2D camera.
+        guard scene3D == nil else { return }
         let rect = canvasRect
         let scale = rect.width / 282
         let author = authorRect
@@ -916,6 +920,31 @@ final class HamsterView: NSView, NSMenuItemValidation {
         if showsWatermark && !authorCursor.isEmpty { addCursorRect(authorCursor, cursor: .pointingHand) }
         addCursorRect(NSRect(x: rect.minX + 158 * scale, y: rect.minY + 96 * scale, width: 20 * scale, height: 20 * scale), cursor: .pointingHand)
         addCursorRect(windowDragRect, cursor: .openHand)
+    }
+
+    private func update3DCursor(at location: NSPoint) {
+        guard let scene3D else { return }
+        let cursor: NSCursor
+        if showsWatermark && watermarkLayer.frame.contains(location) {
+            cursor = .pointingHand
+        } else if windowDragRect.contains(location) {
+            cursor = .openHand
+        } else if !isPlaybackPaused && scene3D.interactionTarget(at: scene3D.view.convert(location, from: self)) != nil {
+            cursor = .pointingHand
+        } else {
+            cursor = .arrow
+        }
+        cursor.set()
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        guard scene3D != nil else { super.cursorUpdate(with: event); return }
+        update3DCursor(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if scene3D != nil { NSCursor.arrow.set() }
+        super.mouseExited(with: event)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -949,6 +978,7 @@ final class HamsterView: NSView, NSMenuItemValidation {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        update3DCursor(at: convert(event.locationInWindow, from: nil))
         guard !isPlaybackPaused else { return }
         if let scene3D {
             if let p = scene3D.stagePoint(scenePoint(event)), isInStage(p) { HamsterEngineMouse(engine, p.x, p.y, 0) }
@@ -1022,10 +1052,17 @@ final class HamsterView: NSView, NSMenuItemValidation {
         if let scene3D {
             if pressedAuthor && watermarkLayer.frame.contains(convert(event.locationInWindow, from: nil)) { NSWorkspace.shared.open(Self.authorURL) }
             else if !isPlaybackPaused && orbitStart != nil && !orbitDragged && !draggingFood {
-                if scene3D.hitsWheel(scenePoint(event)) { HamsterEngineMouse(engine, 167, 105, 1); HamsterEngineMouse(engine, 167, 105, 2) }
-                else if let p = scene3D.stagePoint(scenePoint(event)), isInStage(p) {
-                    HamsterEngineMouse(engine, p.x, p.y, 1)
-                    HamsterEngineMouse(engine, p.x, p.y, 2)
+                switch scene3D.interactionTarget(at: scenePoint(event)) {
+                case .wheel:
+                    HamsterEngineMouse(engine, 167, 105, 1)
+                    HamsterEngineMouse(engine, 167, 105, 2)
+                case .water:
+                    HamsterEngineRequestDrink(engine)
+                case nil:
+                    if let p = scene3D.stagePoint(scenePoint(event)), isInStage(p) {
+                        HamsterEngineMouse(engine, p.x, p.y, 1)
+                        HamsterEngineMouse(engine, p.x, p.y, 2)
+                    }
                 }
             }
             orbitStart = nil

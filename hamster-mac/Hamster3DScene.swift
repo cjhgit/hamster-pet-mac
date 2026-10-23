@@ -468,7 +468,9 @@ import MetalKit
         return NSPoint(x: CGFloat(x), y: CGFloat(y))
     }
 
-    func hitsWheel(_ point: NSPoint) -> Bool {
+    enum InteractionTarget { case wheel, water }
+
+    func interactionTarget(at point: NSPoint) -> InteractionTarget? {
         let halfHeight = Float(camera.camera?.orthographicScale ?? 109)
         let width = Float(max(1, view.bounds.width)), height = Float(max(1, view.bounds.height))
         let x = (Float(point.x) / width - 0.5) * 2 * halfHeight * width / height
@@ -478,14 +480,19 @@ import MetalKit
         let hits = scene.rootNode.hitTestWithSegment(from: .init(origin.x, origin.y, origin.z), to: .init(end.x, end.y, end.z),
                                                     options: [SCNHitTestOption.searchMode.rawValue: SCNHitTestSearchMode.closest.rawValue,
                                                               SCNHitTestOption.ignoreHiddenNodes.rawValue: true])
-        return hits.first.map { hit in
+        return hits.first.flatMap { hit -> InteractionTarget? in
             var node: SCNNode? = hit.node
             while let current = node {
-                if current.name == "wheelHub" { return true }
+                if current.name == "wheelHub" { return .wheel }
+                // Use bottle-local height so the bottom, cap and nozzle stay
+                // clickable after orbiting, zooming or flattening geometry.
+                if current.name == "Water bottle" {
+                    return current.convertPosition(hit.worldCoordinates, from: nil).y <= -54 ? .water : nil
+                }
                 node = current.parent
             }
-            return false
-        } ?? false
+            return nil
+        }
     }
 
     func snapshot(size: CGSize) -> NSImage {

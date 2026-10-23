@@ -412,6 +412,20 @@ void HamsterEngineSetColor(void *engine,const char *name,uint32_t color){E=stati
 void HamsterEngineStart(void *engine){E=static_cast<Engine*>(engine);initializeTimeline(E->root,{});HamsterEngineStep(engine,0);E->collect();}
 void HamsterEngineSetWatermarkVisible(void *engine,int visible){E=static_cast<Engine*>(engine);R(G(E->root,P_txt),P__visible)=V(visible!=0);}
 void HamsterEngineStep(void *engine,double elapsed){E=static_cast<Engine*>(engine);advance(std::max(0.0,elapsed));call(E->root,P_onEnterFrame,{});call(G(E->root,P_ham),P_onEnterFrame,{});if(++E->frames%30==0)E->collect();}
+void HamsterEngineRequestDrink(void *engine){
+    E=static_cast<Engine*>(engine);
+    V h=G(E->root,P_ham);
+    if(bool(G(h,P_drinking)))return;
+    call(h,P_wakeUp,{});
+    if(bool(G(h,P_sleepID))){
+        call(G(E->globals,P__global),P_clearTimeout,{G(h,P_sleepID)});
+        R(h,P_sleepID)=V();
+    }
+    // Reuse the original thirst behavior, including leaving the wheel and
+    // walking to the spout. Eating and grooming can finish naturally first.
+    R(h,P_waterLevel)=V(0);
+    if(!bool(G(h,P_eating))&&!bool(G(h,P_cleaning)))Hamster_decideWhatToDo(h,{});
+}
 void HamsterEngineMouse(void *engine,double x,double y,int action){E=static_cast<Engine*>(engine);if(action!=2){R(E->root,P__xmouse)=V(x);R(E->root,P__ymouse)=V(y);}if(action==0)call(E->root,P_onMouseMove,{});if(action==1){call(E->root,P_onMouseMove,{});call(E->root,P_onMouseDown,{});}if(action==2)call(E->root,P_onMouseUp,{});}
 void HamsterEnginePurgeRenderCache(void *engine){
     E=static_cast<Engine*>(engine);

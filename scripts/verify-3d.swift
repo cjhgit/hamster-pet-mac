@@ -158,7 +158,69 @@ import Darwin
         precondition(renderer.zoom == 0.45)
         renderer.preset(0)
         renderer.update(night: false)
-        precondition(renderer.hitsWheel(renderer.project(.init(27, 105, -4))), "Hub must be hittable")
+        precondition(renderer.interactionTarget(at: renderer.project(.init(27, 105, -4))) == .wheel, "Hub must be hittable")
+        let bottleBottom = SCNVector3(-109, 74.5, 42)
+        func hover(_ world: SCNVector3, cursor: NSCursor) {
+            let p = view.convert(renderer.view.convert(renderer.project(world), to: nil), from: nil)
+            let movement = event(.mouseMoved, p)
+            view.cursorUpdate(with: movement)
+            precondition(NSCursor.current == cursor, "Cursor entry must match the visible interaction target")
+            view.mouseMoved(with: movement)
+            precondition(NSCursor.current == cursor, "Hover cursor must match the visible interaction target")
+        }
+        hover(.init(27, 105, -4), cursor: .pointingHand)
+        for preset in [0, 1, 3] {
+            renderer.preset(preset)
+            precondition(renderer.interactionTarget(at: renderer.project(bottleBottom)) == .water,
+                         "Bottle cap must be hittable at preset \(preset)")
+            hover(bottleBottom, cursor: .pointingHand)
+        }
+        renderer.preset(0)
+        renderer.magnify(0.1)
+        renderer.pan(dx: 10, dy: 8)
+        hover(bottleBottom, cursor: .pointingHand)
+        renderer.preset(0)
+        hover(.init(-97, 52.5, 42), cursor: .pointingHand)
+        hover(.init(-109, 142.5, 42), cursor: .arrow)
+        precondition(renderer.interactionTarget(at: renderer.project(.init(-109, 142.5, 42))) == nil,
+                     "The upper bottle must not trigger drinking")
+        precondition(renderer.interactionTarget(at: renderer.project(.init(-97, 52.5, 42))) == .water,
+                     "Drinking nozzle must be hittable")
+        func clickBottle() {
+            let projected = renderer.project(bottleBottom)
+            let p = view.convert(renderer.view.convert(projected, to: nil), from: nil)
+            view.mouseDown(with: event(.leftMouseDown, p))
+            view.mouseUp(with: event(.leftMouseUp, p))
+        }
+        HamsterTestConfigureScenario(0, 0)
+        renderer.update(night: false)
+        let pauseMenu = view.makeSettingsMenu()
+        pauseMenu.performActionForItem(at: pauseMenu.index(of: pauseMenu.item(withTitle: "暂停播放")!))
+        let waterBeforePause = HamsterEngineGetSceneStateForTest().waterLevel
+        hover(bottleBottom, cursor: .arrow)
+        clickBottle()
+        precondition(HamsterEngineGetSceneStateForTest().waterLevel == waterBeforePause,
+                     "Paused clicks must not request drinking")
+        let resumeMenu = view.makeSettingsMenu()
+        resumeMenu.performActionForItem(at: resumeMenu.index(of: resumeMenu.item(withTitle: "继续播放")!))
+        for scenario: Int32 in [0, 2, 6] {
+            HamsterTestConfigureScenario(scenario, 0)
+            renderer.update(night: false)
+            let food = HamsterTestFoodCount()
+            clickBottle()
+            let state = HamsterEngineGetSceneStateForTest()
+            precondition(state.waterLevel == 0 && state.sleeping == 0 && state.onWheel == 0,
+                         "Bottle click must wake the hamster and guide it off the wheel")
+            for _ in 0..<900 {
+                HamsterTestStep()
+                if HamsterEngineGetSceneStateForTest().waterLevel > 0 { break }
+            }
+            precondition(HamsterEngineGetSceneStateForTest().waterLevel > 0,
+                         "Hamster must reach the bottle and finish drinking from scenario \(scenario)")
+            precondition(HamsterTestFoodCount() == food && HamsterTestDragging() == 0,
+                         "Bottle clicks must not feed or drag food")
+        }
+        print("PASS: bottle/wheel hover cursors after orbit/zoom/pan, pause guard, idle/sleep/wheel to completed drinking")
         let settings = view.makeSettingsMenu()
         precondition(settings.item(withTitle: "3D 视角")?.submenu?.items.count == 7)
         settings.performActionForItem(at: 3)

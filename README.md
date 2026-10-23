@@ -67,6 +67,7 @@ The current releases are ad hoc signed and have not been signed with an Apple De
 | Click empty space | Drop food, up to 10 pieces at a time. |
 | Hold and drag food, then release | Move it around or toss it. |
 | Click the yellow wheel center | Invite the hamster onto the wheel. |
+| Click the bottle bottom or drinking nozzle | Guide the hamster to drink water. |
 | Drag the top of the window | Move the window. |
 | Right-click or Control-click | Change always-on-top, size, watermark, and dark mode settings, toggle debug tools, or open help. |
 | Click the paw icon in the menu bar | Access the same settings, show/hide the hamster, or quit. |
