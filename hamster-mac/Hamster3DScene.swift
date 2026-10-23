@@ -7,6 +7,9 @@ import MetalKit
 /// All visible objects are closed, shaded meshes in world space. No sprites or billboards.
 /// Units match the original 280 × 210 scene; +Y is up and the hamster faces +Z locally.
 @MainActor final class Hamster3DScene {
+    // At 30 FPS the wheel can advance ~24 degrees per frame. Keep repeated
+    // tread joints more than twice that far apart to avoid apparent reversal.
+    static let wheelTreadPanelCount = 6
     let scene = SCNScene()
     let view = Hamster3DRenderView()
     let camera = SCNNode()
@@ -213,7 +216,7 @@ import MetalKit
     private func buildWoodenTread(parent: SCNNode) {
         let plankWood = NSColor(srgbRed: 0.82, green: 0.64, blue: 0.43, alpha: 1)
         let seamWood = NSColor(srgbRed: 0.33, green: 0.24, blue: 0.16, alpha: 1)
-        let planks = 18, gap: Float = 1.8 * .pi / 180
+        let planks = Self.wheelTreadPanelCount, gap: Float = 1.8 * .pi / 180
         let span = 2 * .pi / Float(planks) - gap
         for i in 0..<planks {
             let start = Float(i) * 2 * .pi / Float(planks) + gap / 2
@@ -222,7 +225,7 @@ import MetalKit
             let shade: CGFloat = 1 - CGFloat((i * 37) % 7) / 7 * 0.07
             let wood = plankWood.blended(withFraction: 1 - shade, of: seamWood) ?? plankWood
             let geo = curvedStrip(innerRadius: 97.3, outerRadius: 100.2, startAngle: start, endAngle: start + span,
-                                  zFront: 26, zBack: -26, segments: 6)
+                                  zFront: 26, zBack: -26, segments: 108 / planks)
             geo.firstMaterial = material(wood).copy() as? SCNMaterial
             geo.firstMaterial?.isDoubleSided = true
             let node = SCNNode(geometry: geo)
@@ -241,6 +244,7 @@ import MetalKit
         rod(SCNVector3(-24, -103, -26), SCNVector3(24, -103, -26), radius: 2, color: ink, name: "Wheel stand foot", parent: support)
         support.addChildNode(wheel)
         wheel.name = "Running wheel"
+        // Tread, rims and spokes are rigid parts of this single rotating node.
         buildWoodenTread(parent: wheel)
         for z: CGFloat in [-26, 26] {
             ring(radius: 100, tube: 3, color: ink, name: "Wheel rim border", z: z, parent: wheel)

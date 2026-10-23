@@ -22,6 +22,28 @@ import Darwin
             let bitmap = NSBitmapImageRep(data: image.tiffRepresentation!)!
             try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name + ".png"))
         }
+        // The repeated tread pattern must remain unambiguous at full speed,
+        // and the shared rigid wheel transform must follow the engine angle.
+        HamsterTestConfigureScenario(2, 0)
+        let wheel = renderer.scene.rootNode.childNode(withName: "Running wheel", recursively: true)!
+        var previousWheelAngle = HamsterEngineGetSceneStateForTest().wheelAngle
+        var maximumWheelStep = 0.0
+        for _ in 0..<300 {
+            HamsterTestStep()
+            renderer.update(night: false)
+            let angle = HamsterEngineGetSceneStateForTest().wheelAngle
+            let step = abs(angle - previousWheelAngle)
+            maximumWheelStep = max(maximumWheelStep, step)
+            precondition(step < .pi / Double(Hamster3DScene.wheelTreadPanelCount),
+                         "Tread joints alias at full speed, making the rim appear out of sync")
+            let spokeEnd = wheel.convertPosition(.init(98, 0, -26), to: wheel.parent!)
+            precondition(abs(Double(spokeEnd.x) - 98 * cos(angle)) < 0.002
+                         && abs(Double(spokeEnd.y) + 98 * sin(angle)) < 0.002,
+                         "Rigid wheel rotation diverges from the simulation")
+            previousWheelAngle = angle
+        }
+        precondition(maximumWheelStep > 0.3, "Wheel synchronization check must reach full speed")
+        print("PASS: rigid wheel follows engine angle; tread stays below aliasing limit at full speed")
         // Capture a stable standing pose, and every side of the same actual scene.
         for _ in 0..<40 { HamsterTestStep() }
         HamsterTestSet3DPose(0)
