@@ -173,15 +173,25 @@ inline float torso(float3 p, device const float4 *f) {
 }
 inline float skull(float3 p, device const float4 *f) {
     float3 local = headLocal(p, f);
-    float s = clamp((local.x + 15) * 256 / 51, 0.0f, 256.0f);
+    // Match the CPU's rounded rear half-ellipsoid and distance estimate.
+    if (local.x < 0) {
+        float3 radii = float3(12, 15, 18), q = local / radii;
+        float k0 = length(q), k1 = length(q / radii);
+        return k1 > 1e-8f ? k0 * (k0 - 1) / k1 : -15;
+    }
+    float s = clamp(local.x * 256 / 36, 0.0f, 256.0f);
     uint i = min(255u, uint(s));
     float4 a = mix(f[267 + i], f[268 + i], s - float(i));
     float2 q = float2((local.y - a.x) / a.y, local.z / a.z);
-    return max((length(q) - 1) * min(a.y, a.z), max(-15 - local.x, local.x - 36));
+    float k0 = length(q), k1 = length(q / a.yz);
+    float radial = k1 > 1e-8f ? k0 * (k0 - 1) / k1 : -min(a.y, a.z);
+    return max(radial, local.x - 36);
 }
 inline float distanceField(float3 p, device const float4 *f) {
-    float a = torso(p,f), b = skull(p,f), h = max(4 - abs(a-b), 0.0f) / 4;
-    return min(a,b) - h*h;
+    // Match the CPU shoulder blend so the skull cap cannot make a sharp bump.
+    constexpr float blend = 6;
+    float a = torso(p,f), b = skull(p,f), h = max(blend - abs(a-b), 0.0f) / blend;
+    return min(a,b) - h*h*blend*0.25f;
 }
 inline uint lattice(uint3 p, uint3 dims) { return (p.z * dims.y + p.y) * dims.x + p.x; }
 inline uint3 coordinate(uint i, uint3 dims) { return uint3(i % dims.x, i / dims.x % dims.y, i / (dims.x * dims.y)); }

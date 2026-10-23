@@ -48,7 +48,7 @@ struct Field {
         buildBodySections();
         static const auto lookup=[]{
             std::array<Profile,257> result;
-            for(int i=0;i<=256;i++)result[i]=profile(-15+51*double(i)/256);
+            for(int i=0;i<=256;i++)result[i]=profile(36*double(i)/256);
             return result;
         }();
         headSections=lookup;
@@ -112,16 +112,18 @@ struct Field {
         return std::max(radial,std::abs(x)-torsoLength);
     }
     static Profile profile(double x){
+        // Only the face needs authored sections. At x=0 it joins the rounded
+        // rear skull with a horizontal tangent in every component.
         static const Profile p[]={
-            {-15,0,.2,.2},{-10,0,11,12},{0,0,15,18},{6,-1,15.6,17},
+            {0,0,15,18},{6,-1,15.6,17},
             {13,-1.5,15,14},{23,0,12.5,8},{29,2,8.5,4.5},
             {34,3,3.5,1.6},{35.5,3.8,.4,.4},{36,3.8,.1,.1}};
-        int i=0;while(i<8&&x>p[i+1].x)i++;
+        int i=0;while(i<6&&x>p[i+1].x)i++;
         double t=std::clamp((x-p[i].x)/(p[i+1].x-p[i].x),0.0,1.0);
         auto value=[](const Profile &s,int component){return component==0?s.cy:component==1?s.ry:s.rz;};
         auto slope=[&](int at,int component){
-            if(at==0)return (value(p[1],component)-value(p[0],component))/(p[1].x-p[0].x);
-            if(at==9)return (value(p[9],component)-value(p[8],component))/(p[9].x-p[8].x);
+            if(at==0)return 0.0;
+            if(at==7)return (value(p[7],component)-value(p[6],component))/(p[7].x-p[6].x);
             double left=(value(p[at],component)-value(p[at-1],component))/(p[at].x-p[at-1].x);
             double right=(value(p[at+1],component)-value(p[at],component))/(p[at+1].x-p[at].x);
             return left*right>0?2*left*right/(left+right):0.0;
@@ -135,16 +137,28 @@ struct Field {
     }
     double skull(Vec world)const{
         Vec p=headLocal(world);
-        double sample=std::clamp((p.x+15)*256/51,0.0,256.0);
+        // Keep the rear skull compact: an elongated cap makes a second hump
+        // above the shoulders when the head tilts down. This short rounded cap
+        // joins the face tangentially without adding volume along the back.
+        if(p.x<0){
+            Vec q={p.x/12,p.y/15,p.z/18};
+            double k0=length(q),k1=length({q.x/12,q.y/15,q.z/18});
+            return k1>1e-8?k0*(k0-1)/k1:-15;
+        }
+        double sample=std::clamp(p.x*256/36,0.0,256.0);
         int i=std::min(255,int(sample));double t=sample-i;
         const auto &a=headSections[i],&b=headSections[i+1];
         auto mix=[&](double v,double w){return v+(w-v)*t;};
         Profile s={p.x,mix(a.cy,b.cy),mix(a.ry,b.ry),mix(a.rz,b.rz)};
         Vec q={(p.y-s.cy)/s.ry,p.z/s.rz,0};
-        double radial=(length(q)-1)*std::min(s.ry,s.rz);
-        return std::max(radial,std::max(-15-p.x,p.x-36));
+        double k0=length(q),k1=length({q.x/s.ry,q.y/s.rz,0});
+        double radial=k1>1e-8?k0*(k0-1)/k1:-std::min(s.ry,s.rz);
+        return std::max(radial,p.x-36);
     }
-    double operator()(Vec p)const{return smoothMin(torso(p),skull(p),4.0);}
+    // Blend across the whole shoulder rather than a narrow seam. A small
+    // radius leaves the rear skull cap visible as a bump in side silhouettes.
+    // Keep this radius in sync with HamsterBodyGPU.distanceField.
+    double operator()(Vec p)const{return smoothMin(torso(p),skull(p),6.0);}
     Vec normal(Vec p)const{
         constexpr double h=.025;
         return unit({(*this)(p+Vec{h,0,0})-(*this)(p-Vec{h,0,0}),
