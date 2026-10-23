@@ -51,6 +51,14 @@ import Darwin
         renderer.preset(1)
         renderer.update(night: true)
         try save("night")
+        // Inspect the limb roots and rounded paws under directional night light.
+        for pose in [0, 1, 2] {
+            HamsterTestSet3DPose(Int32(pose))
+            renderer.update(night: true)
+            renderer.preset(6)
+            try save("night-paws-\(pose)")
+        }
+        HamsterTestSet3DPose(0)
         renderer.update(night: false)
         var meshes = 0
         renderer.scene.rootNode.enumerateChildNodes { node, _ in

@@ -11,6 +11,7 @@ import Metal
     private let limbs: [Surface]
     private let legCreases: [Surface]
     private let paws: [Surface]
+    private let limbCoat: SCNMaterial
     private let features: [Surface]
     private let rims: [Surface]
     private let mouth: [Surface]
@@ -33,17 +34,12 @@ import Metal
         let a = Float($0) / 24 * 2 * .pi
         return V(cos(a), sin(a), 0)
     }
-    private static let legBlend: [V] = (0..<24).map { i in
-        let a = Float(i) / 24 * 2 * .pi
-        let weights = (0..<3).map { pow(max(0, cos(a - Float($0) * 2 * .pi / 3)), 2) }
-        return V(weights[0], weights[1], weights[2])
-    }
     private static let legOutline: [Float] = (0...12).flatMap { j in
         let t = min(1, max(0, (Float(j) / 12 - 0.35) / 0.65))
         return Array(repeating: t * t * (3 - 2 * t), count: 24)
     } + [0, 1]
-    private static let pawCircle: [SIMD2<Float>] = (0..<12).map {
-        let a = Float($0) / 12 * 2 * .pi
+    private static let pawCircle: [SIMD2<Float>] = (0..<24).map {
+        let a = Float($0) / 24 * 2 * .pi
         return .init(cos(a), sin(a))
     }
     private static let tubeCircle: [SIMD2<Float>] = (0..<10).map {
@@ -347,10 +343,30 @@ import Metal
         coat.diffuse.contents = texture
         coat.ambient.contents = texture
         coat.diffuse.magnificationFilter = .linear
+        limbCoat = bodyM
+        // Shade the small limbs as a continuation of the torso volume. Their
+        // own narrow cones otherwise catch the lamp like separate bright cuffs.
+        // Only the skin material changes normals; outline extrusion retains the
+        // actual mesh normals and therefore its original silhouette.
+        bodyM.shaderModifiers = [.geometry: """
+        #pragma arguments
+        float3 coatCenter;
+        float3 coatAxis;
+        float coatLength;
+        #pragma body
+        float3 delta = _geometry.position.xyz - coatCenter;
+        float axial = dot(delta, coatAxis);
+        float3 radial = delta - coatAxis * axial;
+        float3 coatGradient = radial / 400.0 + coatAxis * axial / max(1.0, coatLength * coatLength);
+        float3 coatNormal = length(coatGradient) > 0.00001 ? normalize(coatGradient) : _geometry.normal;
+        _geometry.normal = normalize(mix(coatNormal, _geometry.normal, 0.12));
+        """]
         torso = Surface(name: "Hamster deforming skin", materials: [coat], ink: inkM, outline: 1.30, silhouetteOnly: true)
         limbs = (0..<4).map { Surface(name: ["Right foreleg", "Left foreleg", "Right hindleg", "Left hindleg"][$0], materials: [bodyM], ink: inkM, outline: 0.45, weightedOutline: true) }
         legCreases = (0..<4).map { Surface(name: "Running flank crease \($0)", materials: [inkM], ink: inkM, outline: 0) }
-        paws = (0..<4).map { Surface(name: "Deforming paw \($0)", materials: [mat("feetColor")], ink: inkM, outline: 1.25) }
+        // Continue the body's coat all the way to the toes. A separate paw tint
+        // reads as a mismatched patch under the cool night lighting.
+        paws = (0..<4).map { Surface(name: "Deforming paw \($0)", materials: [bodyM], ink: inkM, outline: 0.35) }
         features = (0..<4).map { Surface(name: ["Right eye", "Left eye", "Right ear", "Left ear"][$0], materials: [mat($0 < 2 ? "eyeColor" : "earColor")], ink: inkM, outline: 0) }
         rims = (0..<2).map { Surface(name: "Black ear rim \($0)", materials: [inkM], ink: inkM, outline: 0) }
         // A small constant-white sparkle rides each eye lens, giving the bead
@@ -475,6 +491,9 @@ import Metal
         let running = state.onWheel != 0 ? smooth(Float((state.speed - 0.15) / 0.65)) : 0
         let torsoAxis = simd_normalize(landmarks[1] - rear)
         let torsoCenter = (landmarks[1] + rear) * 0.5
+        limbCoat.setValue(NSValue(scnVector3: SCNVector3(torsoCenter)), forKey: "coatCenter")
+        limbCoat.setValue(NSValue(scnVector3: SCNVector3(torsoAxis)), forKey: "coatAxis")
+        limbCoat.setValue(simd_distance(landmarks[1], rear) * 0.5 + 20, forKey: "coatLength")
         let bodyDown = simd_normalize(simd_cross(V(sin(Float(state.heading)), 0, -cos(Float(state.heading))), torsoAxis))
         for leg in 0..<4 {
             let offset = 4 + leg * 5
@@ -486,7 +505,7 @@ import Metal
                 let ventral = smooth(simd_dot(point - torsoCenter, bodyDown) / 8)
                 return point - bodyDown * (leg >= 2 ? 3.5 * running * ventral : 0)
             }
-            updateLeg(limbs[leg], crease: legCreases[leg], attachment: attachment, wrist: p[3], running: running)
+            updateLeg(limbs[leg], crease: legCreases[leg], attachment: attachment, wrist: p[3], bodyCenter: torsoCenter, running: running)
             paw(paws[leg], wrist: p[3], toe: p[4])
         }
         // Ear rims and eye lenses only change shape when the original controls
@@ -573,8 +592,8 @@ import Metal
         movingParts?.update()
     }
 
-    private func updateLeg(_ mesh: Surface, crease: Surface, attachment input: [V], wrist: V, running: Float) {
-        guard mesh.inputsChanged(input + [wrist, V(running, 0, 0)]) else { return }
+    private func updateLeg(_ mesh: Surface, crease: Surface, attachment input: [V], wrist: V, bodyCenter: V, running: Float) {
+        guard mesh.inputsChanged(input + [wrist, bodyCenter, V(running, 0, 0)]) else { return }
         var p = input
         let center = (p[0] + p[1] + p[2]) / 3
         let axis = simd_normalize(wrist - center)
@@ -586,21 +605,21 @@ import Metal
         let rings = 12, sides = 24
         var vertices: [V] = []
         vertices.reserveCapacity((rings + 1) * sides + 2)
-        // Each ring uses the same angular blend of the three attachments.
-        // Evaluate it once per side, rather than repeating 13 times.
-        let edges = Self.legBlend.map { w -> V in
-            var q = V.zero
-            q += p[0] * w.x; q += p[1] * w.y; q += p[2] * w.z
-            return q / max(0.001, w.x + w.y + w.z)
-        }
+        // Fit a smooth oval to the attachment triangle. Blending its corners
+        // directly produced three flat fins, especially visible in night light.
+        let radiusU = max(1.5, p.map { abs(simd_dot($0 - center, u)) }.max()!)
+        let radiusV = max(1.5, p.map { abs(simd_dot($0 - center, v)) }.max()!)
+        let inward = bodyCenter - center
+        let buriedRoot = center + inward * min(1, 10 / max(0.001, simd_length(inward)))
         let radial = Self.legCircle.map { u * $0.x + v * $0.y }
         for j in 0...rings {
             // Broad, stretching flanks are part of the running silhouette. A
             // concave cone here leaves the torso reading as an isolated oval.
             let t = Float(j) / Float(rings), weight = pow(1 - t, 1.6 - 0.6 * running)
             for i in 0..<sides {
-                let q = edges[i], ring = radial[i]
-                vertices.append(center + (wrist - center) * t + (q - center) * weight + ring * (1.15 * (1 - weight)))
+                let circle = Self.legCircle[i], ring = radial[i]
+                let oval = u * (circle.x * radiusU) + v * (circle.y * radiusV)
+                vertices.append(buriedRoot + (wrist - buriedRoot) * t + oval * weight + ring * (1.15 * (1 - weight)))
             }
         }
         capVertices(&vertices, sides: sides, rings: rings)
@@ -612,7 +631,7 @@ import Metal
         if !crease.node.isHidden {
             let path = (0...rings).map { j -> V in
                 let t = Float(j) / Float(rings), point = vertices[j * sides]
-                let radial = point - (center + (wrist - center) * t)
+                let radial = point - (buriedRoot + (wrist - buriedRoot) * t)
                 let outward = simd_length_squared(radial) > 1e-8 ? simd_normalize(radial) : u
                 return point + outward * 0.08
             }
@@ -626,12 +645,14 @@ import Metal
         let axis = simd_length_squared(direction) > 1e-8 ? simd_normalize(direction) : V(1, 0, 0)
         let width = simd_normalize(abs(axis.y) < 0.9 ? simd_cross(axis, V(0, 1, 0)) : simd_cross(axis, V(0, 0, 1)))
         let thickness = simd_cross(axis, width)
-        let rings = 14, sides = 12
+        let rings = 18, sides = Self.pawCircle.count
         var vertices: [V] = []
         vertices.reserveCapacity((rings + 1) * sides)
         for j in 0...rings {
-            let t = Float(j) / Float(rings)
-            let roundEnd = sqrt(max(0, 1 - pow(2 * t - 1, 2)))
+            // Latitude sampling keeps enough rings at the rounded tips.
+            let angle = Float(j) / Float(rings) * .pi
+            let t = (1 - cos(angle)) * 0.5
+            let roundEnd = sin(angle)
             let arch = sin(t * .pi) * 0.35
             let center = wrist + direction * t + V(0, arch, 0)
             // A narrow wrist, soft palm and flattened, rounded toes all deform together.
