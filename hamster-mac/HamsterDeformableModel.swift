@@ -389,7 +389,7 @@ import Metal
         }
         eyeHighlights = highlights
         mouth = (0..<3).map { Surface(name: "Mouth stroke \($0)", materials: [inkM], ink: inkM, outline: 0) }
-        tail = Surface(name: "Small flexible tail", materials: [mat("tailColor")], ink: inkM, outline: 0.45)
+        tail = Surface(name: "Small flexible tail", materials: [mat("tailColor")], ink: inkM, outline: 0.85, weightedOutline: true)
         root.name = "Original hamster articulation"
         surfaces = [torso, tail] + limbs + legCreases + paws + features + rims + mouth
         mouth[2].node.isHidden = true
@@ -580,8 +580,7 @@ import Metal
         let right = headPoint(.init(32, 1, 3), state: state, center: head)
         tube(mouth[0], path: [left, nose, right], radius: 0.38)
         tube(mouth[1], path: [nose, chin], radius: 0.35)
-        let t = landmarks[3], tailDirection = simd_normalize(t - rear)
-        tube(tail, path: [t - tailDirection * 1.5, t, t + tailDirection * 3.5], radius: 2.2, flat: 0.7)
+        updateTail(rear: rear, bodyAxis: torsoAxis, bodyDown: bodyDown)
         setHidden(heldFood, state.eating == 0)
         if !heldFood.isHidden {
             let position = (landmarks[8] + landmarks[13]) * 0.5
@@ -591,6 +590,35 @@ import Metal
             }
         }
         movingParts?.update()
+    }
+
+    private func updateTail(rear: V, bodyAxis: V, bodyDown: V) {
+        guard tail.inputsChanged([rear, bodyAxis, bodyDown]) else { return }
+        // Anchor inside the rounded pelvis instead of extending the old 2D
+        // tail marker, which can sit below the new volumetric rump.
+        let root = rear - bodyAxis * 15 - bodyDown * 3
+        let axis = simd_normalize(-bodyAxis - bodyDown * 0.35)
+        let side = simd_normalize(simd_cross(bodyDown, bodyAxis))
+        let up = simd_cross(axis, side)
+        let rings = 18, sides = Self.pawCircle.count
+        var vertices: [V] = []
+        var outlineWeights: [Float] = []
+        vertices.reserveCapacity((rings + 1) * sides)
+        outlineWeights.reserveCapacity((rings + 1) * sides)
+        for j in 0...rings {
+            let t = Float(j) / Float(rings)
+            // Close the buried root, then narrow steadily to a pointed tip.
+            let center = root + axis * (10 * t) - bodyDown * (0.5 * sin(t * .pi))
+            let radius = 2.4 * smooth(t / 0.14) * pow(1 - t, 0.95)
+            // Taper the ink too, so extrusion cannot blunt the pointed end.
+            let outline = smooth(t / 0.14) * min(1, (1 - t) / 0.28)
+            for circle in Self.pawCircle {
+                vertices.append(center + radius * (side * circle.x + up * circle.y))
+                outlineWeights.append(outline)
+            }
+        }
+        tail.outlineWeights = outlineWeights
+        tail.update(vertices, [topology(rings: rings, sides: sides)])
     }
 
     private func updateLeg(_ mesh: Surface, crease: Surface, attachment input: [V], wrist: V, bodyCenter: V, running: Float) {
