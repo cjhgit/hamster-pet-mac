@@ -114,10 +114,11 @@ struct Field {
     static Profile profile(double x){
         // Only the face needs authored sections. At x=0 it joins the rounded
         // rear skull with a horizontal tangent in every component.
+        // Preserve the rounded muzzle; only tuck the lower contour slightly.
         static const Profile p[]={
             {0,0,15,18},{6,-1,15.6,17},
-            {13,-1.5,15,14},{23,0,12.5,8},{29,2,8.5,4.5},
-            {34,3,3.5,1.6},{35.5,3.8,.4,.4},{36,3.8,.1,.1}};
+            {13,-1.5,15,14},{23,0,12.5,8},{29,1.45,7.95,4.5},
+            {34,2.5,3,1.6},{35.5,3.8,.4,.4},{36,3.8,.1,.1}};
         int i=0;while(i<6&&x>p[i+1].x)i++;
         double t=std::clamp((x-p[i].x)/(p[i+1].x-p[i].x),0.0,1.0);
         auto value=[](const Profile &s,int component){return component==0?s.cy:component==1?s.ry:s.rz;};

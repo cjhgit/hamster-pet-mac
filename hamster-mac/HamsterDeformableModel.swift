@@ -611,8 +611,10 @@ import Metal
                 }
             }
         }
+        // Keep the short mouth seam against the rounded muzzle instead of
+        // extending below the skin and reading as a protruding lower jaw.
         let nose = headPoint(.init(35, 2, 0), state: state, center: head)
-        let chin = headPoint(.init(33, 9, 0), state: state, center: head)
+        let chin = headPoint(.init(33, 5.9, 0), state: state, center: head)
         let left = headPoint(.init(32, 1, -3), state: state, center: head)
         let right = headPoint(.init(32, 1, 3), state: state, center: head)
         tube(mouth[0], path: [left, nose, right], radius: 0.38)
