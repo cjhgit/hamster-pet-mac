@@ -14,6 +14,7 @@ import Metal
     private let limbCoat: SCNMaterial
     private let features: [Surface]
     private let rims: [Surface]
+    private let earFolds: [Surface]
     private let mouth: [Surface]
     private let eyeHighlights: [SCNNode]
     private let tail: Surface
@@ -82,6 +83,8 @@ import Metal
             hull.removeFromParentNode()
         }
         var outlineWeights: [Float] = []
+        var textureCoordinates: [SIMD2<Float>] = []
+        private var cachedTextureCoordinates: [SIMD2<Float>] = []
         private let outline: Float
         private let weightedOutline: Bool
         private var cachedWeights: [Float] = []
@@ -172,7 +175,7 @@ import Metal
             let samePoints = previousPoints.count == points.count && zip(previousPoints, points).allSatisfy {
                 simd_length_squared($0 - $1) <= 0.0005 * 0.0005
             }
-            if sameTopology && samePoints && (!weightedOutline || cachedWeights == outlineWeights) { return }
+            if sameTopology && samePoints && (!weightedOutline || cachedWeights == outlineWeights) && cachedTextureCoordinates == textureCoordinates { return }
             previousPoints = points
             if !sameTopology {
                 cachedIndices = groups
@@ -211,6 +214,12 @@ import Metal
                                                      componentsPerVector: 2, bytesPerComponent: 4, dataOffset: 0, dataStride: MemoryLayout<SIMD2<Float>>.stride)
                 }
                 sources.append(weightSource!)
+            } else if textureCoordinates.count == points.count {
+                cachedTextureCoordinates = textureCoordinates
+                let data = textureCoordinates.withUnsafeBytes { Data($0) }
+                sources.append(SCNGeometrySource(data: data, semantic: .texcoord, vectorCount: points.count,
+                                                usesFloatComponents: true, componentsPerVector: 2,
+                                                bytesPerComponent: 4, dataOffset: 0, dataStride: MemoryLayout<SIMD2<Float>>.stride))
             }
             setGeometry(SCNGeometry(sources: sources, elements: elements))
         }
@@ -368,8 +377,15 @@ import Metal
         // Continue the body's coat all the way to the toes. A separate paw tint
         // reads as a mismatched patch under the cool night lighting.
         paws = (0..<4).map { Surface(name: "Deforming paw \($0)", materials: [bodyM], ink: inkM, outline: 1.00) }
-        features = (0..<4).map { Surface(name: ["Right eye", "Left eye", "Right ear", "Left ear"][$0], materials: [mat($0 < 2 ? "eyeColor" : "earColor")], ink: inkM, outline: 0) }
+        let earCoat = mat("earColor").copy() as! SCNMaterial
+        let earTexture = Self.earTexture(base: colors["earColor"]!)
+        earCoat.diffuse.contents = earTexture
+        earCoat.ambient.contents = earTexture
+        earCoat.diffuse.wrapS = .clamp
+        earCoat.diffuse.magnificationFilter = .linear
+        features = (0..<4).map { Surface(name: ["Right eye", "Left eye", "Right ear", "Left ear"][$0], materials: [$0 < 2 ? mat("eyeColor") : earCoat], ink: inkM, outline: 0) }
         rims = (0..<2).map { Surface(name: "Black ear rim \($0)", materials: [inkM], ink: inkM, outline: 0) }
+        earFolds = (0..<2).map { Surface(name: "Inner ear fold \($0)", materials: [inkM], ink: inkM, outline: 0) }
         // A small constant-white sparkle rides each eye lens, giving the bead
         // eyes a catchlight; it scales with the eye so blinks hide it too.
         let sparkle = SCNMaterial()
@@ -391,7 +407,7 @@ import Metal
         mouth = (0..<3).map { Surface(name: "Mouth stroke \($0)", materials: [inkM], ink: inkM, outline: 0) }
         tail = Surface(name: "Small flexible tail", materials: [mat("tailColor")], ink: inkM, outline: 0.85, weightedOutline: true)
         root.name = "Original hamster articulation"
-        surfaces = [torso, tail] + limbs + legCreases + paws + features + rims + mouth
+        surfaces = [torso, tail] + limbs + legCreases + paws + features + rims + earFolds + mouth
         mouth[2].node.isHidden = true
         root.addChildNode(torso.node)
         let dynamicParts = [tail] + limbs + legCreases + paws + mouth
@@ -405,7 +421,7 @@ import Metal
         }
         headFeatures.name = "Rigid head features"
         root.addChildNode(headFeatures)
-        for mesh in features + rims { headFeatures.addChildNode(mesh.node) }
+        for mesh in features + rims + earFolds { headFeatures.addChildNode(mesh.node) }
         let pellet = SCNSphere(radius: 3)
         pellet.segmentCount = 20
         pellet.materials = [mat("foodColor")]
@@ -439,6 +455,22 @@ import Metal
         image.lockFocus()
         let gradient = NSGradient(starting: body, ending: cream)!
         gradient.draw(in: NSRect(x: 0, y: 0, width: 256, height: 2), angle: 0)
+        image.unlockFocus()
+        return image
+    }
+
+    private static func earTexture(base: NSColor) -> NSImage {
+        let pink = NSColor(srgbRed: 0.86, green: 0.58, blue: 0.55, alpha: 1)
+        let image = NSImage(size: .init(width: 256, height: 2))
+        image.lockFocus()
+        NSGradient(colorsAndLocations:
+            (pink.blended(withFraction: 0.26, of: .brown)!, 0),
+            (pink, 0.22),
+            (pink.blended(withFraction: 0.50, of: base)!, 0.36),
+            (base.blended(withFraction: 0.24, of: .white)!, 0.50),
+            (base, 0.72),
+            (base.blended(withFraction: 0.16, of: .brown)!, 1))!
+            .draw(in: NSRect(x: 0, y: 0, width: 256, height: 2), angle: 0)
         image.unlockFocus()
         return image
     }
@@ -554,7 +586,11 @@ import Metal
                 let center = contour.reduce(V.zero, +) / Float(contour.count)
                 let local = contour.map { $0 - center }
                 setPosition(features[feature].node, center)
-                lens(features[feature], contour: local, depth: feature < 2 ? 0.7 : 1.5)
+                if feature < 2 {
+                    lens(features[feature], contour: local, depth: 0.7)
+                } else {
+                    ear(features[feature], rim: rims[feature - 2], fold: earFolds[feature - 2], contour: local, center: center)
+                }
                 if feature < 2 {
                     // Catchlight: upper-outer point on the eye dome, sized by the
                     // eye itself so blinking shrinks it away naturally.
@@ -570,7 +606,7 @@ import Metal
                 }
                 if feature >= 2 {
                     setPosition(rims[feature - 2].node, center)
-                    tube(rims[feature - 2], path: local + [local[0]], radius: 0.48, closed: true)
+                    setPosition(earFolds[feature - 2].node, center)
                 }
             }
         }
@@ -712,6 +748,60 @@ import Metal
         }
         if !closed { capVertices(&vertices, sides: sides, rings: count - 1) }
         mesh.update(vertices, [topology(rings: count - 1, sides: sides, capped: !closed)])
+    }
+
+    private func ear(_ mesh: Surface, rim: Surface, fold: Surface, contour: [V], center: V) {
+        guard mesh.inputsChanged(contour) else { return }
+        var polygonNormal = V.zero
+        for i in contour.indices { polygonNormal += simd_cross(contour[i], contour[(i + 1) % contour.count]) }
+        polygonNormal = simd_normalize(polygonNormal)
+        let outward = V(0.8, 0, center.z < 0 ? -1 : 1)
+        let normal = simd_dot(polygonNormal, outward) >= 0 ? polygonNormal : -polygonNormal
+        // Cross-section travels from the recessed inner bowl, over a rolled
+        // lip, and back across the curved outer shell: one closed ear volume.
+        let profile: [(Float, Float)] = [
+            (0, -0.9), (0.18, -1.1), (0.36, -0.8), (0.54, -0.1),
+            (0.70, 1.0), (0.83, 2.0), (0.93, 2.65), (0.98, 2.6),
+            (1, 2.1), (0.99, 1.5), (0.92, 0.8), (0.78, -0.3),
+            (0.58, -1.4), (0.32, -2.1), (0, -2.3)
+        ]
+        func position(_ p: V, radius: Float, depth: Float) -> V {
+            // Upper ear curls more than the root; the bowl sits slightly low.
+            let flare = 1 + 0.18 * radius * tanh(p.y / 4)
+            let down = V(0, -0.7 * (1 - radius), 0)
+            return p * radius + normal * (depth * flare) + down
+        }
+        var vertices: [V] = []
+        let foldEnd = max(2, Int(Float(contour.count - 1) * 0.78))
+        func foldRadius(_ t: Float) -> Float { 0.66 + 0.34 * pow(abs(2 * t - 1), 3) }
+        mesh.textureCoordinates = []
+        for (j, section) in profile.enumerated() {
+            for (i, p) in contour.enumerated() {
+                let t = min(1, Float(i) / Float(foldEnd))
+                // Raise a crescent of cartilage along the upper/front ear.
+                // Its inner edge returns to the outer lip at both ends,
+                // leaving the lower bowl open rather than drawing an oval.
+                let distance = (section.0 - foldRadius(t) - 0.07) / 0.13
+                let curl: Float = j < 8 && i <= foldEnd ? 1.25 * sin(t * .pi) * exp(-distance * distance) : 0
+                vertices.append(position(p, radius: section.0, depth: section.1 + curl))
+                let uv = Float(j) / Float(profile.count - 1)
+                mesh.textureCoordinates.append(.init(j < 8 ? uv + curl * 0.055 : uv, 0.5))
+            }
+        }
+        mesh.update(vertices, [topology(rings: profile.count - 1, sides: contour.count,
+                                       reversed: simd_dot(polygonNormal, normal) > 0)])
+        let edge = contour.map { position($0, radius: 1, depth: 2.1) }
+        tube(rim, path: edge + [edge[0]], radius: 0.42, closed: true)
+        // Follow the actual sculpted surface, so the cartoon crease remains
+        // attached when seen from the side and is occluded from behind.
+        let crease = (0...foldEnd).map { i -> V in
+            let radius = foldRadius(Float(i) / Float(foldEnd))
+            let band = (0..<8).first { profile[$0 + 1].0 >= radius } ?? 7
+            let fraction = (radius - profile[band].0) / (profile[band + 1].0 - profile[band].0)
+            return vertices[band * contour.count + i] * (1 - fraction)
+                + vertices[(band + 1) * contour.count + i] * fraction + normal * 0.13
+        }
+        tube(fold, path: crease, radius: 0.30)
     }
 
     private func lens(_ mesh: Surface, contour: [V], depth: Float) {
