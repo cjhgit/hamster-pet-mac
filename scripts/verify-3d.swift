@@ -538,6 +538,46 @@ import Darwin
         restoreSkin.performActionForItem(at: restoreSkin.index(of: restoreSkin.item(withTitle: "骨骼模式")!))
         precondition(!skinRoot.isHidden && skeletonRoot.isHidden && !prefs.bool(forKey: "hamster.skeletonMode"))
         print("PASS: skeleton menu, paused toggle, original walk/wheel/sleep pose synchronization and skin restoration")
+        HamsterTestConfigureScenario(0, 0)
+        renderer.update(night: false)
+        renderer.inspectHamster(yaw: 0.65, pitch: 0.15)
+        let earRoots = (0..<2).map { renderer.hamster.childNode(withName: "Ear root \($0)", recursively: true)! }
+        let names = ["Right ear", "Left ear"]
+        for i in 0..<2 {
+            for name in [names[i], "Black ear rim \(i)", "Inner ear fold \(i)"] {
+                precondition(renderer.hamster.childNode(withName: name, recursively: true)?.parent === earRoots[i],
+                             "Ear skin, outline and cartilage must share one anchored joint")
+            }
+        }
+        try save("ears-rest")
+        var peakAngle: Float = 0
+        var asymmetric = false
+        var savedFlick = false
+        for _ in 0..<240 {
+            HamsterTestStep()
+            renderer.update(night: false)
+            for ear in earRoots { peakAngle = max(peakAngle, ear.simdOrientation.angle) }
+            asymmetric = asymmetric || simd_length(earRoots[0].simdOrientation.vector - earRoots[1].simdOrientation.vector) > 0.03
+            // Ear bones use the same pivot as the complete rendered ear.
+            let base = 2 + (renderer.hamsterRestingBones.isEmpty ? 8 : 12) + 4
+            for i in 0..<2 {
+                let root = earRoots[i].simdConvertPosition(.zero, to: renderer.hamster)
+                precondition(simd_distance(root, renderer.hamsterSkeletonSegments[base + i * 2][1]) < 0.001)
+            }
+            if peakAngle > 0.15 && !savedFlick {
+                try save("ears-flick")
+                savedFlick = true
+            }
+        }
+        precondition(peakAngle > 0.15 && asymmetric, "Awake ears must flick independently")
+        let frozen = earRoots.map { $0.simdOrientation.vector }
+        for _ in 0..<5 { renderer.update(night: false) }
+        precondition(earRoots.map { $0.simdOrientation.vector } == frozen,
+                     "Rendering without stepping must not advance ear animation")
+        HamsterTestConfigureScenario(6, 0)
+        for _ in 0..<180 { HamsterTestStep(); renderer.update(night: false) }
+        precondition(earRoots.allSatisfy { $0.simdOrientation.angle < 0.001 }, "Sleeping ears must settle quietly")
+        print("PASS: anchored ear skin/rim/fold, independent flicks, shared skeleton joints, frame-based pause and quiet sleep")
         print("Screenshots: \(output.path)")
     }
 }

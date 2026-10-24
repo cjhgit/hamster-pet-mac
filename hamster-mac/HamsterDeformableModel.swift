@@ -33,6 +33,8 @@ import Metal
     private let tail: Surface
     private let heldFood = SCNNode()
     private let headFeatures = SCNNode()
+    private let earPivots = [SCNNode(), SCNNode()]
+    private var earActivity: Float = 1
     private var surfaces: [Surface] = []
     private var nodeRevision = 0
     var geometryRevision: Int { surfaces.reduce(nodeRevision) { $0 + $1.revision } }
@@ -492,7 +494,14 @@ import Metal
         }
         headFeatures.name = "Rigid head features"
         skinRoot.addChildNode(headFeatures)
-        for mesh in features + rims + earFolds { headFeatures.addChildNode(mesh.node) }
+        for mesh in features.prefix(2) { headFeatures.addChildNode(mesh.node) }
+        for i in 0..<2 {
+            earPivots[i].name = "Ear root \(i)"
+            headFeatures.addChildNode(earPivots[i])
+            for mesh in [features[i + 2], rims[i], earFolds[i]] {
+                earPivots[i].addChildNode(mesh.node)
+            }
+        }
         let pellet = SCNSphere(radius: 3)
         pellet.segmentCount = 20
         pellet.materials = [mat("foodColor")]
@@ -550,6 +559,28 @@ import Metal
         let a = Float(state.heading + state.headYaw), pitch = Float(state.headPitch)
         let x = cos(pitch) * p.x - sin(pitch) * p.y, y = sin(pitch) * p.x + cos(pitch) * p.y
         return center + .init(cos(a) * x + sin(a) * p.z, -y, sin(a) * x - cos(a) * p.z)
+    }
+
+    /// Driven by simulation frames, never wall time: pause and single-step
+    /// apply equally to skin, ear rims and the debugging skeleton.
+    private func earOrientation(index: Int, state: HamsterSceneState) -> simd_quatf {
+        let time = Float(frame) / 30
+        let offset: Float = index == 0 ? 1.1 : 3.4
+        let period: Float = index == 0 ? 6.2 : 7.7
+        let phase = (time + offset).truncatingRemainder(dividingBy: period)
+        func flick(_ start: Float, _ duration: Float) -> Float {
+            let t = (phase - start) / duration
+            guard t > 0 && t < 1 else { return 0 }
+            let envelope = sin(t * .pi)
+            return envelope * envelope * sin(t * 2 * .pi)
+        }
+        let twitch = 0.48 * flick(0, 0.46) + 0.18 * flick(0.64, 0.3)
+        let stride = state.moving != 0 ? sin(Float(state.legPhase) + offset) * 0.045 * Float(min(1, abs(state.speed))) : 0
+        let angle = earActivity * (twitch + stride + 0.025 * sin(time * 0.8 + offset))
+        let side: Float = index == 0 ? 1 : -1
+        let tilt = simd_quatf(angle: angle, axis: simd_normalize(V(side * 0.45, 0, 1)))
+        let turn = simd_quatf(angle: angle * side * 0.35, axis: V(0, 1, 0))
+        return tilt * turn
     }
 
     func update(force: Bool = false, groundLift: Float = 0) {
@@ -680,6 +711,8 @@ import Metal
             headFeatures.simdOrientation = orientation
             nodeRevision += 1
         }
+        let earTarget: Float = resting ? 0 : state.petting != 0 ? 0.25 : 1
+        earActivity += (earTarget - earActivity) * min(1, Float(elapsedFrames) / 8)
         for feature in 0..<4 {
             let count = Int(HamsterEngineGetRigFeatureCount(engine, Int32(feature)))
             let control = (0..<count).map { HamsterEngineGetRigFeatureLocalPoint(engine, Int32(feature), Int32($0)) }
@@ -711,7 +744,7 @@ import Metal
                 // black rim don't rebuild their entire skin every frame.
                 let center = contour.reduce(V.zero, +) / Float(contour.count)
                 let local = contour.map { $0 - center }
-                setPosition(features[feature].node, center)
+                if feature < 2 { setPosition(features[feature].node, center) }
                 if feature < 2 {
                     lens(features[feature], contour: local, depth: 0.7)
                 } else {
@@ -732,8 +765,26 @@ import Metal
                     highlight.simdScale = SIMD3<Float>(repeating: radius * 0.15)
                 }
                 if feature >= 2 {
-                    setPosition(rims[feature - 2].node, center)
-                    setPosition(earFolds[feature - 2].node, center)
+                    let index = feature - 2
+                    let bottom = contour.map(\.y).min()!, top = contour.map(\.y).max()!
+                    let base = contour.filter { $0.y <= bottom + (top - bottom) * 0.22 }
+                    let root = base.reduce(V.zero, +) / Float(base.count)
+                    let tip = contour.max { $0.y < $1.y }!
+                    let pivot = earPivots[index]
+                    setPosition(pivot, root)
+                    let earRotation = earOrientation(index: index, state: state)
+                    if simd_length_squared(pivot.simdOrientation.vector - earRotation.vector) > 1e-12 {
+                        pivot.simdOrientation = earRotation
+                        nodeRevision += 1
+                    }
+                    // Rotate the complete ear around its buried base, keeping
+                    // cartilage, black rim and inner fold attached together.
+                    for mesh in [features[feature], rims[index], earFolds[index]] {
+                        setPosition(mesh.node, center - root)
+                    }
+                    let posedRoot = head + orientation.act(root)
+                    let posedTip = head + orientation.act(root + earRotation.act(tip - root))
+                    appendSkeletonChain([head, posedRoot, posedTip])
                 }
             }
         }
