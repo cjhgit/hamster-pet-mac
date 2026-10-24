@@ -475,7 +475,15 @@ import Metal
         mouth = (0..<3).map { Surface(name: "Mouth stroke \($0)", materials: [inkM], ink: inkM, outline: 0) }
         tail = Surface(name: "Small flexible tail", materials: [mat("tailColor")], ink: inkM, outline: 0.85, weightedOutline: true)
         root.name = "Original hamster articulation"
-        surfaces = [torso, tail] + limbs + legCreases + paws + features + rims + earFolds + mouth
+        var allSurfaces = [torso, tail]
+        allSurfaces += limbs
+        allSurfaces += legCreases
+        allSurfaces += paws
+        allSurfaces += features
+        allSurfaces += rims
+        allSurfaces += earFolds
+        allSurfaces += mouth
+        surfaces = allSurfaces
         mouth[2].node.isHidden = true
         skinRoot.name = "Hamster skin"
         skeletonRoot.name = "Hamster pose skeleton"
@@ -483,7 +491,11 @@ import Metal
         root.addChildNode(skinRoot)
         root.addChildNode(skeletonRoot)
         skinRoot.addChildNode(torso.node)
-        let dynamicParts = [tail] + limbs + legCreases + paws + mouth
+        var dynamicParts = [tail]
+        dynamicParts += limbs
+        dynamicParts += legCreases
+        dynamicParts += paws
+        dynamicParts += mouth
         if !ProcessInfo.processInfo.arguments.contains("--hamster-unbatched") {
             for mesh in dynamicParts { mesh.enableBatch() }
             let batch = MovingPartsBatch(parts: dynamicParts, ink: inkM, device: device)
@@ -927,8 +939,10 @@ import Metal
                 let p0 = knots[max(0, segment - 1)], p1 = knots[segment]
                 let p2 = knots[segment + 1], p3 = knots[min(3, segment + 2)]
                 let t2 = t * t, t3 = t2 * t
-                return (p1 * 2 + (p2 - p0) * t + (p0 * 2 - p1 * 5 + p2 * 4 - p3) * t2
-                        + (-p0 + p1 * 3 - p2 * 3 + p3) * t3) * 0.5
+                let start = p1 * 2 + (p2 - p0) * t
+                let mid = (p0 * 2 - p1 * 5 + p2 * 4 - p3) * t2
+                let end = (-p0 + p1 * 3 - p2 * 3 + p3) * t3
+                return (start + mid + end) * 0.5
             }
             var points: [V] = [], weights: [Float] = []
             for j in 0...rings {
