@@ -604,7 +604,7 @@ import MetalKit
             .init(x: Double(localEnd.x), y: Double(localEnd.y), z: Double(localEnd.z), curve: 0))
         let nearest = hits.first.map { simd_distance(origin, SIMD3<Float>($0.worldCoordinates)) } ?? .infinity
         if bodyHit >= 0 && Float(bodyHit) * simd_distance(origin, end) < nearest { return .hamster }
-        return hits.first.flatMap { hit -> InteractionTarget? in
+        let target = hits.first.flatMap { hit -> InteractionTarget? in
             var node: SCNNode? = hit.node
             while let current = node {
                 if current === hamster { return .hamster }
@@ -619,6 +619,34 @@ import MetalKit
             }
             return nil
         }
+        if let target { return target }
+        return isNearCushion(point) ? .cushion : nil
+    }
+
+    /// Expand the projected cushion by screen points, so even an edge-on view
+    /// has a useful click target. Keep existing interactive objects first.
+    private func isNearCushion(_ point: NSPoint) -> Bool {
+        let outline = (0..<64).map { i -> NSPoint in
+            let angle = CGFloat(i) / 64 * 2 * .pi
+            let x: CGFloat = Self.cushionCenter.x + 52 * cos(angle)
+            let z: CGFloat = Self.cushionCenter.z + 52 * sin(angle)
+            return project(SCNVector3(x, 0.9, z))
+        }
+        let padding: CGFloat = 14
+        var inside = false
+        for i in outline.indices {
+            let a = outline[i], b = outline[(i + 1) % outline.count]
+            let dx = b.x - a.x, dy = b.y - a.y
+            let lengthSquared = dx * dx + dy * dy
+            let px = point.x - a.x, py = point.y - a.y
+            let dot: CGFloat = px * dx + py * dy
+            let t: CGFloat = lengthSquared > 0.0001 ? max(0, min(1, dot / lengthSquared)) : 0
+            let distance: CGFloat = hypot(px - t * dx, py - t * dy)
+            if distance <= padding { return true }
+            if (a.y > point.y) != (b.y > point.y),
+               point.x < a.x + (point.y - a.y) * dx / dy { inside.toggle() }
+        }
+        return inside
     }
 
     func snapshot(size: CGSize) -> NSImage {

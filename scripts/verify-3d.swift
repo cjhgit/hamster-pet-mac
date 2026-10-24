@@ -246,6 +246,14 @@ import Darwin
             hover(cushionEdge, cursor: .pointingHand)
         }
         renderer.preset(0)
+        // Thin, edge-on cushions still need a comfortable screen-space target.
+        HamsterTestConfigureScenario(0, 0)
+        renderer.update(night: false)
+        renderer.preset(0)
+        let cushionAbove = renderer.project(.init(116, 0.9, 70))
+        let paddedPoint = NSPoint(x: cushionAbove.x, y: cushionAbove.y + 10)
+        precondition(renderer.interactionTarget(at: paddedPoint) == .cushion,
+                     "Clicking above the thin cushion must use the expanded target")
         let cushionPause = view.makeSettingsMenu()
         cushionPause.performActionForItem(at: cushionPause.index(of: cushionPause.item(withTitle: "暂停播放")!))
         hover(cushionEdge, cursor: .arrow)
