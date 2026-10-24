@@ -144,6 +144,7 @@ final class HamsterHelpWindowController: NSWindowController {
         row("⌘ + 拖动", "播放时直接把食物拖到仓鼠面前")
         row("点击黄色轮心", "邀请仓鼠上跑轮跑一会儿")
         row("点击水瓶底部或饮水嘴", "引导仓鼠去喝水")
+        row("点击圆形软垫", "引导仓鼠走到垫子上睡觉")
         row("点击仓鼠身体", "抚摸它，先减速收步，再眯眼停留 3 秒；再次点击可延长")
 
         section("视角与播放")
@@ -177,6 +178,7 @@ final class HamsterView: NSView, NSMenuItemValidation {
     private var isDarkMode = false
     private static let debugToolsKey = "hamster.showsDebugTools"
     private var showsDebugTools = false
+    private static let skeletonModeKey = "hamster.skeletonMode"
     private var timer: Timer?
     private var visibilityWatchdog: Timer?
     private var metalRenderer: HamsterMetalRenderer?
@@ -255,6 +257,7 @@ final class HamsterView: NSView, NSMenuItemValidation {
         if prefers3D && !ProcessInfo.processInfo.arguments.contains("--hamster-cpu-renderer") {
             let renderer = Hamster3DScene(engine: engine)
             scene3D = renderer
+            renderer.showsSkeleton = preferences.bool(forKey: Self.skeletonModeKey)
             addSubview(renderer.view)
             configurePlaybackControls()
             sceneHint.isHidden = true
@@ -807,6 +810,12 @@ final class HamsterView: NSView, NSMenuItemValidation {
         let debugTools = menu.addItem(withTitle: "调试工具", action: #selector(toggleDebugTools(_:)), keyEquivalent: "")
         debugTools.target = self
         debugTools.state = showsDebugTools ? .on : .off
+        if let scene3D {
+            let skeleton = menu.addItem(withTitle: "骨骼模式", action: #selector(toggleSkeletonMode(_:)), keyEquivalent: "")
+            skeleton.target = self
+            skeleton.state = scene3D.showsSkeleton ? .on : .off
+            skeleton.toolTip = "显示当前运动姿态的骨骼，可配合暂停、逐帧和 3D 视角调试"
+        }
         menu.addItem(.separator())
         let playback = menu.addItem(withTitle: isPlaybackPaused ? "继续播放" : "暂停播放", action: #selector(togglePlayback(_:)), keyEquivalent: "")
         playback.target = self
@@ -853,6 +862,12 @@ final class HamsterView: NSView, NSMenuItemValidation {
         scene3D?.update(night: isDarkMode)
         update3DLayout()
         needsDisplay = true
+    }
+
+    @objc private func toggleSkeletonMode(_ sender: NSMenuItem) {
+        guard let scene3D else { return }
+        scene3D.showsSkeleton.toggle()
+        preferences.set(scene3D.showsSkeleton, forKey: Self.skeletonModeKey)
     }
 
     @objc private func toggleDebugTools(_ sender: NSMenuItem) {
@@ -1061,6 +1076,8 @@ final class HamsterView: NSView, NSMenuItemValidation {
                     HamsterEngineRequestDrink(engine)
                 case .hamster:
                     HamsterEnginePet(engine)
+                case .cushion:
+                    HamsterEngineRequestSleep(engine, Double(Hamster3DScene.cushionCenter.x) + 140)
                 case nil:
                     if let p = scene3D.stagePoint(scenePoint(event)), isInStage(p) {
                         HamsterEngineMouse(engine, p.x, p.y, 1)

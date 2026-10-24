@@ -219,6 +219,55 @@ double HamsterEngineHitBodySegment(void *engine,HamsterRigPoint from,HamsterRigP
     return -1;
 }
 
+double HamsterEngineGetBodyContactHeight(void *engine,double rotation){
+    using namespace hamster_body;
+    E=static_cast<Engine*>(engine);
+    Field field(engine);field.prepare();
+    const Vec up={sin(rotation),cos(rotation),0};
+    // Start at the lowest real cross-section points of torso and face. Follow
+    // the blended implicit surface itself, rather than padding a bounding box.
+    Vec torso=field.center,face=field.head;
+    double torsoY=INFINITY,faceY=INFINITY;
+    for(int i=0;i<=256;i++){
+        const auto &s=field.bodySections[i];
+        const double cy=(s.back+s.belly)*.5,ry=std::max(.2,(s.belly-s.back)*.5);
+        for(double rz:{s.right,s.left}){
+            double a=dot(field.down,up)*ry,b=dot(field.side,up)*rz,d=hypot(a,b);
+            Vec p=field.center+field.axis*((i/128.0-1)*field.torsoLength)+field.down*cy;
+            if(d>1e-8)p=p-field.down*(ry*a/d)-field.side*(rz*b/d);
+            if(dot(p,up)<torsoY){torso=p;torsoY=dot(p,up);}
+        }
+        const auto &h=field.headSections[i];
+        double a=dot(field.headDown,up)*h.ry,b=dot(field.headSide,up)*h.rz,d=hypot(a,b);
+        Vec p=field.headWorld({h.x,h.cy,0});
+        if(d>1e-8)p=p-field.headDown*(h.ry*a/d)-field.headSide*(h.rz*b/d);
+        if(dot(p,up)<faceY){face=p;faceY=dot(p,up);}
+    }
+    double ax=dot(field.headForward,up)*12,ay=dot(field.headDown,up)*15,az=dot(field.headSide,up)*18;
+    double norm=sqrt(ax*ax+ay*ay+az*az);
+    Vec cap=field.head;
+    if(norm>1e-8)cap=cap-field.headForward*(12*std::max(0.0,ax)/norm)-field.headDown*(15*ay/norm)-field.headSide*(18*az/norm);
+    double lowest=INFINITY;
+    for(Vec p:{torso,face,cap}){
+        for(int step=0;step<90;step++){
+            // Newton projection also handles the small shoulder union expansion.
+            for(int projection=0;projection<6;projection++){
+                double d=field(p);if(std::abs(d)<.0005)break;
+                constexpr double h=.025;
+                Vec gradient={(field(p+Vec{h,0,0})-field(p-Vec{h,0,0}))/(2*h),
+                              (field(p+Vec{0,h,0})-field(p-Vec{0,h,0}))/(2*h),
+                              (field(p+Vec{0,0,h})-field(p-Vec{0,0,h}))/(2*h)};
+                p=p-gradient*(d/std::max(.01,dot(gradient,gradient)));
+            }
+            if(std::abs(field(p))<.02)lowest=std::min(lowest,dot(p,up));
+            Vec n=field.normal(p),tangent=up*-1+n*dot(up,n);
+            if(length(tangent)<.0005)break;
+            p=p+tangent*(step<50?2.0:.5);
+        }
+    }
+    return std::isfinite(lowest)?lowest:std::min(torsoY,faceY);
+}
+
 HamsterBodyField HamsterEngineBuildBodyField(void *engine){
     using namespace hamster_body;
     E=static_cast<Engine*>(engine);

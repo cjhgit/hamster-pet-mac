@@ -7,6 +7,19 @@ import Metal
 @MainActor final class HamsterDeformableModel {
     typealias V = SIMD3<Float>
     let root = SCNNode()
+    private let skinRoot = SCNNode()
+    private let skeletonRoot = SCNNode()
+    private var boneNodes: [(rod: SCNNode, joint: SCNNode)] = []
+    private(set) var skeletonSegments: [[V]] = []
+    private var skeletonJointFlags: [Bool] = []
+    var showsSkeleton = false {
+        didSet {
+            skinRoot.isHidden = showsSkeleton
+            skeletonRoot.isHidden = !showsSkeleton
+            if showsSkeleton { updateSkeletonGeometry() }
+            nodeRevision += 1
+        }
+    }
     private let torso: Surface
     private let limbs: [Surface]
     private let legCreases: [Surface]
@@ -63,6 +76,42 @@ import Metal
         }
     }
 
+    private var bodyContactCache: (generation: UInt32, rotation: Float, height: Float)?
+
+    private func bodyContactHeight(rotation: Float) -> Float {
+        let generation = HamsterEngineBuildBodyField(engine).generation
+        if let cached = bodyContactCache, cached.generation == generation, cached.rotation == rotation { return cached.height }
+        let height = Float(HamsterEngineGetBodyContactHeight(engine, Double(rotation)))
+        bodyContactCache = (generation, rotation, height)
+        return height
+    }
+
+    private(set) var groundedOriginHeight: Float = 0
+    private var lastGroundLift: Float = -1
+    private var sleepTuck: Float = 0
+
+    /// Authored CPU vertices and normal-expanded outlines, matching the submitted
+    /// limb buffers. Exposed for frame-by-frame ground-contact verification.
+    private var restingPaws: [[V]] = []
+    private(set) var restingBones: [[V]] = []
+    var pawVerticesForInspection: [[V]] { restingPaws.isEmpty ? paws.map { $0.batchPoints } : restingPaws }
+    var limbVerticesForInspection: [[V]] { limbs.map { $0.batchPoints } }
+    var limbSilhouettesForInspection: [[V]] {
+        limbs.map { surface in
+            surface.batchPoints.enumerated().flatMap { i, p in
+                [p, p + surface.batchNormals[i] * surface.batchOutlineWeight(i)]
+            }
+        }
+    }
+
+    var groundVerticesForInspection: [V] {
+        ([tail] + limbs + legCreases + paws + mouth).filter { !$0.node.isHidden }.flatMap { surface in
+            surface.batchPoints.enumerated().flatMap { i, p in
+                [p, p + surface.batchNormals[i] * surface.batchOutlineWeight(i)]
+            }
+        }
+    }
+
     final class Surface {
         let node = SCNNode()
         private(set) var revision = 0
@@ -90,6 +139,13 @@ import Metal
         private var cachedWeights: [Float] = []
         private var weightSource: SCNGeometrySource?
         private var previousPoints: [V] = []
+        private var authoredPoints: [V] = []
+        private var contactPlane: SIMD4<Float>?
+        func setContactPlane(_ plane: SIMD4<Float>?) {
+            guard plane != contactPlane else { return }
+            contactPlane = plane
+            if !authoredPoints.isEmpty { update(authoredPoints, cachedIndices) }
+        }
         private var generatorInputs: [V] = []
         func inputsChanged(_ inputs: [V]) -> Bool {
             guard inputs != generatorInputs else { return false }
@@ -166,8 +222,18 @@ import Metal
             setGeometry(skin)
         }
 
-        func update(_ points: [V], _ groups: [[Int32]]) {
-            guard !points.isEmpty else { return }
+        func update(_ input: [V], _ groups: [[Int32]]) {
+            guard !input.isEmpty else { return }
+            authoredPoints = input
+            let points: [V]
+            if let plane = contactPlane {
+                let up = V(plane.x, plane.y, plane.z)
+                points = input.enumerated().map { i, p in
+                    // Reserve the actual outline width too, so its displaced
+                    // vertices cannot cross the floor between animation frames.
+                    p + up * max(0, plane.w + batchOutlineWeight(i) - simd_dot(p, up))
+                }
+            } else { points = input }
             let sameTopology = cachedIndices == groups
             // Suppress numerical settling below 0.006 screen pixels even at
             // maximum zoom in the default window. Compare against the last
@@ -193,8 +259,8 @@ import Metal
             for i in normals.indices {
                 normals[i] = simd_length_squared(normals[i]) > 1e-10 ? simd_normalize(normals[i]) : V(0, 1, 0)
             }
+            batchNormals = normals
             if usesBatch {
-                batchNormals = normals
                 cachedWeights = outlineWeights
                 revision += 1
                 return
@@ -376,7 +442,7 @@ import Metal
         legCreases = (0..<4).map { Surface(name: "Running flank crease \($0)", materials: [inkM], ink: inkM, outline: 0) }
         // Continue the body's coat all the way to the toes. A separate paw tint
         // reads as a mismatched patch under the cool night lighting.
-        paws = (0..<4).map { Surface(name: "Deforming paw \($0)", materials: [bodyM], ink: inkM, outline: 1.00) }
+        paws = (0..<4).map { Surface(name: "Deforming paw \($0)", materials: [bodyM], ink: inkM, outline: 1.00, weightedOutline: true) }
         let earCoat = mat("earColor").copy() as! SCNMaterial
         let earTexture = Self.earTexture(base: colors["earColor"]!)
         earCoat.diffuse.contents = earTexture
@@ -409,25 +475,30 @@ import Metal
         root.name = "Original hamster articulation"
         surfaces = [torso, tail] + limbs + legCreases + paws + features + rims + earFolds + mouth
         mouth[2].node.isHidden = true
-        root.addChildNode(torso.node)
+        skinRoot.name = "Hamster skin"
+        skeletonRoot.name = "Hamster pose skeleton"
+        skeletonRoot.isHidden = true
+        root.addChildNode(skinRoot)
+        root.addChildNode(skeletonRoot)
+        skinRoot.addChildNode(torso.node)
         let dynamicParts = [tail] + limbs + legCreases + paws + mouth
         if !ProcessInfo.processInfo.arguments.contains("--hamster-unbatched") {
             for mesh in dynamicParts { mesh.enableBatch() }
             let batch = MovingPartsBatch(parts: dynamicParts, ink: inkM, device: device)
             movingParts = batch
-            root.addChildNode(batch.node)
+            skinRoot.addChildNode(batch.node)
         } else {
-            for mesh in dynamicParts { root.addChildNode(mesh.node) }
+            for mesh in dynamicParts { skinRoot.addChildNode(mesh.node) }
         }
         headFeatures.name = "Rigid head features"
-        root.addChildNode(headFeatures)
+        skinRoot.addChildNode(headFeatures)
         for mesh in features + rims + earFolds { headFeatures.addChildNode(mesh.node) }
         let pellet = SCNSphere(radius: 3)
         pellet.segmentCount = 20
         pellet.materials = [mat("foodColor")]
         heldFood.geometry = pellet
         heldFood.name = "Food between original hands"
-        root.addChildNode(heldFood)
+        skinRoot.addChildNode(heldFood)
         if !ProcessInfo.processInfo.arguments.contains("--hamster-cpu-body"), let device {
             do { gpuBody = try HamsterBodyGPU(device: device) }
             catch { NSLog("Hamster GPU body initialization failed: %@", String(describing: error)) }
@@ -481,10 +552,12 @@ import Metal
         return center + .init(cos(a) * x + sin(a) * p.z, -y, sin(a) * x - cos(a) * p.z)
     }
 
-    func update(force: Bool = false) {
+    func update(force: Bool = false, groundLift: Float = 0) {
         let current = Int(HamsterEngineGetFrameCount(engine))
-        guard force || current != frame else { return }
+        guard force || current != frame || groundLift != lastGroundLift else { return }
+        let elapsedFrames = max(0, current - frame)
         frame = current
+        lastGroundLift = groundLift
         let state = HamsterEngineGetSceneState(engine)
         landmarks = (0..<24).map(point)
         if state.onWheel != 0 {
@@ -528,19 +601,72 @@ import Metal
         limbCoat.setValue(NSValue(scnVector3: SCNVector3(torsoAxis)), forKey: "coatAxis")
         limbCoat.setValue(simd_distance(landmarks[1], rear) * 0.5 + 20, forKey: "coatLength")
         let bodyDown = simd_normalize(simd_cross(V(sin(Float(state.heading)), 0, -cos(Float(state.heading))), torsoAxis))
+        let resting = state.sleeping != 0 || state.preparingSleep != 0
+        let rotation = Float(-state.rotation * .pi / 180)
+        groundedOriginHeight = Float(210 - state.y) + groundLift
+        if resting && state.onWheel == 0 {
+            // The body rests on the floor itself. The cushion is decorative and
+            // may intersect the sleeping body; it never adds a vertical offset.
+            groundedOriginHeight = 0.5 - bodyContactHeight(rotation: rotation) + 0.55
+        }
+        let contactPlane: SIMD4<Float>? = state.onWheel == 0
+            ? .init(sin(rotation), cos(rotation), 0, 0.5 - groundedOriginHeight) : nil
+        for surface in [tail] + limbs + legCreases + paws + mouth { surface.setContactPlane(contactPlane) }
+        let tuckTarget: Float = resting ? 1 : 0
+        let tuckStep = Float(elapsedFrames) / 8
+        sleepTuck += max(-tuckStep, min(tuckStep, tuckTarget - sleepTuck))
+        let tuck = smooth(sleepTuck)
+        let side = V(sin(Float(state.heading)), 0, -cos(Float(state.heading)))
+        restingPaws = []; restingBones = []
+        // These controls also drive the skin below. No second simulation or
+        // skeleton-only IK is allowed: debugging must expose the rendered pose.
+        skeletonSegments = [[rear, landmarks[1]], [landmarks[1], head]]
+        skeletonJointFlags = [true, true]
+        var shoulderConnections: [[V]] = []
+        let forward = simd_normalize(V(cos(Float(state.heading)), 0, sin(Float(state.heading))))
         for leg in 0..<4 {
             let offset = 4 + leg * 5
             let p = Array(landmarks[offset..<(offset + 5)])
-            // Bury the hindleg roots inside the tucked running belly. Wrist and
-            // toe trajectories stay unchanged; the attachment must not form a
-            // second, angular belly below the continuous torso skin.
             let attachment = p[0...2].map { point in
                 let ventral = smooth(simd_dot(point - torsoCenter, bodyDown) / 8)
                 return point - bodyDown * (leg >= 2 ? 3.5 * running * ventral : 0)
             }
-            updateLeg(limbs[leg], crease: legCreases[leg], attachment: attachment, wrist: p[3], bodyCenter: torsoCenter, running: running)
-            paw(paws[leg], wrist: p[3], toe: p[4])
+            shoulderConnections.append([leg < 2 ? landmarks[1] : rear, attachment.reduce(V.zero, +) / 3])
+            setHidden(paws[leg].node, tuck > 0)
+            if tuck > 0 {
+                let front = leg < 2
+                // Keep the original shoulder/hip attachment, not a relocated
+                // triangle on the floor. Rotate a fixed-length two-bone chain.
+                let root = attachment.reduce(V.zero, +) / 3
+                let sign: Float = simd_dot(root - torsoCenter, side) >= 0 ? 1 : -1
+                var ankle = root + forward * (front ? 6 : -4) + side * (sign * (front ? 3 : 4))
+                ankle.y = 0.5 - groundedOriginHeight + 1.85
+                let bend = front ? -forward + V(0, 0.15, 0) : forward + side * (sign * 0.1)
+                let solved = foldedJoint(root: root, target: ankle, bend: bend,
+                                         upper: front ? 10 : 13, lower: front ? 9 : 13)
+                ankle = solved.ankle
+                let joint = solved.joint
+                let toe = ankle + forward * (front ? 3 : 12)
+                let posedAnkle = p[3] + (ankle - p[3]) * tuck
+                let posedToe = p[4] + (toe - p[4]) * tuck
+                let straightJoint = root + (p[3] - root) * 0.5
+                let posedJoint = straightJoint + (joint - straightJoint) * tuck
+                restingBones.append([root, posedJoint, posedAnkle, posedToe])
+                appendSkeletonChain([root, posedJoint, posedAnkle, posedToe])
+                restingPaws.append(updateRestingLeg(limbs[leg], attachment: attachment,
+                    joint: posedJoint, ankle: posedAnkle, toe: posedToe,
+                    bodyCenter: torsoCenter, side: side, front: front))
+                setHidden(legCreases[leg].node, true)
+            } else {
+                // The original gait has attachment, wrist and toe controls;
+                // do not invent an elbow with a separate animation here.
+                appendSkeletonChain([attachment.reduce(V.zero, +) / 3, p[3], p[4]])
+                updateLeg(limbs[leg], crease: legCreases[leg], attachment: attachment,
+                          wrist: p[3], bodyCenter: torsoCenter, running: running, tucked: 0)
+                paw(paws[leg], wrist: p[3], toe: p[4], tucked: 0)
+            }
         }
+        for connection in shoulderConnections { appendSkeletonChain(connection) }
         // Ear rims and eye lenses only change shape when the original controls
         // change (e.g. blinking). Let the GPU transform their shared head frame
         // rather than rebuilding every vertex whenever the hamster turns.
@@ -619,7 +745,19 @@ import Metal
         let right = headPoint(.init(32, 1, 3), state: state, center: head)
         tube(mouth[0], path: [left, nose, right], radius: 0.38)
         tube(mouth[1], path: [nose, chin], radius: 0.35)
+        // Skull guides follow exactly the same rigid head transform as the
+        // muzzle. Their shape is a guide, rather than an independent head rig.
+        for vertical in [false, true] {
+            let ring = (0...12).map { i -> V in
+                let angle = Float(i) / 12 * 2 * .pi
+                let local = vertical ? V(10 + 22 * cos(angle), 13 * sin(angle), 0)
+                                     : V(10 + 22 * cos(angle), 0, 13 * sin(angle))
+                return headPoint(local, state: state, center: head)
+            }
+            appendSkeletonChain(ring, joints: false)
+        }
         updateTail(rear: rear, bodyAxis: torsoAxis, bodyDown: bodyDown)
+        if showsSkeleton { updateSkeletonGeometry() }
         setHidden(heldFood, state.eating == 0)
         if !heldFood.isHidden {
             let position = (landmarks[8] + landmarks[13]) * 0.5
@@ -631,12 +769,61 @@ import Metal
         movingParts?.update()
     }
 
+    private func appendSkeletonChain(_ points: [V], joints: Bool = true) {
+        for i in 1..<points.count {
+            skeletonSegments.append([points[i - 1], points[i]])
+            skeletonJointFlags.append(joints)
+        }
+    }
+
+    private func updateSkeletonGeometry() {
+        while boneNodes.count < skeletonSegments.count {
+            let material = SCNMaterial()
+            material.diffuse.contents = NSColor(calibratedRed: 0.95, green: 0.85, blue: 0.61, alpha: 1)
+            let cylinder = SCNCylinder(radius: 1.05, height: 1)
+            cylinder.radialSegmentCount = 8
+            cylinder.materials = [material]
+            let rod = SCNNode(geometry: cylinder)
+            rod.name = "Pose bone \(boneNodes.count)"
+            let jointMaterial = SCNMaterial()
+            jointMaterial.diffuse.contents = NSColor(calibratedRed: 0.86, green: 0.36, blue: 0.12, alpha: 1)
+            let sphere = SCNSphere(radius: 1.65)
+            sphere.segmentCount = 8
+            sphere.materials = [jointMaterial]
+            let joint = SCNNode(geometry: sphere)
+            joint.name = "Pose joint \(boneNodes.count)"
+            skeletonRoot.addChildNode(rod)
+            skeletonRoot.addChildNode(joint)
+            boneNodes.append((rod, joint))
+        }
+        for (i, nodes) in boneNodes.enumerated() {
+            let active = i < skeletonSegments.count
+            nodes.rod.isHidden = !active
+            nodes.joint.isHidden = !active || !skeletonJointFlags[i]
+            guard active else { continue }
+            let a = skeletonSegments[i][0], b = skeletonSegments[i][1]
+            let length = simd_distance(a, b)
+            nodes.rod.simdPosition = (a + b) * 0.5
+            nodes.rod.simdScale = V(skeletonJointFlags[i] ? 1 : 0.6, max(0.001, length), skeletonJointFlags[i] ? 1 : 0.6)
+            nodes.rod.simdOrientation = length > 0.0001
+                ? simd_quatf(from: V(0, 1, 0), to: (b - a) / length) : simd_quatf()
+            nodes.joint.simdPosition = b
+        }
+        nodeRevision += 1
+    }
+
     private func updateTail(rear: V, bodyAxis: V, bodyDown: V) {
-        guard tail.inputsChanged([rear, bodyAxis, bodyDown]) else { return }
+
         // Anchor inside the rounded pelvis instead of extending the old 2D
         // tail marker, which can sit below the new volumetric rump.
         let root = rear - bodyAxis * 15 - bodyDown * 3
         let axis = simd_normalize(-bodyAxis - bodyDown * 0.35)
+        appendSkeletonChain([rear, root], joints: false)
+        appendSkeletonChain((0...4).map { i in
+            let t = Float(i) / 4
+            return root + axis * (10 * t) - bodyDown * (0.5 * sin(t * .pi))
+        }, joints: false)
+        guard tail.inputsChanged([rear, bodyAxis, bodyDown]) else { return }
         let side = simd_normalize(simd_cross(bodyDown, bodyAxis))
         let up = simd_cross(axis, side)
         let rings = 18, sides = Self.pawCircle.count
@@ -660,8 +847,74 @@ import Metal
         tail.update(vertices, [topology(rings: rings, sides: sides)])
     }
 
-    private func updateLeg(_ mesh: Surface, crease: Surface, attachment input: [V], wrist: V, bodyCenter: V, running: Float) {
-        guard mesh.inputsChanged(input + [wrist, bodyCenter, V(running, 0, 0)]) else { return }
+    private func foldedJoint(root: V, target: V, bend: V, upper: Float, lower: Float) -> (joint: V, ankle: V) {
+        let delta = target - root
+        let distance = max(0.001, simd_length(delta))
+        let direction = delta / distance
+        let reach = min(upper + lower - 0.01, max(abs(upper - lower) + 0.01, distance))
+        let along = (upper * upper - lower * lower + reach * reach) / (2 * reach)
+        let height = sqrt(max(0, upper * upper - along * along))
+        let projected = bend - direction * simd_dot(bend, direction)
+        let pole = simd_normalize(projected)
+        return (root + direction * along + pole * height, root + direction * reach)
+    }
+
+    /// One continuous skin from the buried muscle root through elbow/knee,
+    /// wrist/ankle and toes. No separate caps or detached oval at the wrist.
+    private func updateRestingLeg(_ mesh: Surface, attachment: [V], joint: V, ankle: V, toe: V,
+                                  bodyCenter: V, side: V, front: Bool) -> [V] {
+        let ringsPerBone = 12, sides = 24, rings = ringsPerBone * 3
+        let pawStart = ringsPerBone * 2 * sides
+        if mesh.inputsChanged(attachment + [joint, ankle, toe, bodyCenter]) {
+            let root = attachment.reduce(V.zero, +) / 3
+            let inward = bodyCenter - root
+            let buriedRoot = root + inward * min(1, 8 / max(0.001, simd_length(inward)))
+            let knots = [buriedRoot, joint, ankle, toe]
+            let rootRadius = max(front ? 6 : 9, attachment.map { simd_distance($0, root) }.max()! * 0.7)
+            let jointRadius: Float = front ? 2.8 : 4.2
+            func curve(_ segment: Int, _ t: Float) -> V {
+                let p0 = knots[max(0, segment - 1)], p1 = knots[segment]
+                let p2 = knots[segment + 1], p3 = knots[min(3, segment + 2)]
+                let t2 = t * t, t3 = t2 * t
+                return (p1 * 2 + (p2 - p0) * t + (p0 * 2 - p1 * 5 + p2 * 4 - p3) * t2
+                        + (-p0 + p1 * 3 - p2 * 3 + p3) * t3) * 0.5
+            }
+            var points: [V] = [], weights: [Float] = []
+            for j in 0...rings {
+                let segment = min(2, j / ringsPerBone)
+                let t = Float(j - segment * ringsPerBone) / Float(ringsPerBone)
+                let center = curve(segment, t)
+                let tangent = simd_normalize(curve(segment, min(1, t + 0.01)) - curve(segment, max(0, t - 0.01)))
+                let projected = side - tangent * simd_dot(side, tangent)
+                let u = simd_normalize(projected), v = simd_normalize(simd_cross(tangent, u))
+                var width: Float, thickness: Float
+                if segment == 0 {
+                    width = rootRadius + (jointRadius - rootRadius) * smooth(t)
+                    thickness = width
+                } else if segment == 1 {
+                    width = jointRadius + (1.5 - jointRadius) * smooth(t)
+                    thickness = width
+                } else {
+                    let end = sqrt(max(0.0001, 1 - t * t))
+                    width = (1.5 + 0.2 * sin(t * .pi)) * end
+                    thickness = (1.5 - 0.75 * smooth(t / 0.4)) * end
+                }
+                for i in 0..<sides {
+                    let a = Float(i) * 2 * .pi / Float(sides)
+                    points.append(center + u * (cos(a) * width) + v * (sin(a) * thickness))
+                    weights.append(smooth(Float(j) / Float(ringsPerBone) / 0.4))
+                }
+            }
+            capVertices(&points, sides: sides, rings: rings)
+            weights += [0, 1]
+            mesh.outlineWeights = weights
+            mesh.update(points, [topology(rings: rings, sides: sides, capped: true)])
+        }
+        return Array(mesh.batchPoints[pawStart..<min(mesh.batchPoints.count, (rings + 1) * sides)])
+    }
+
+    private func updateLeg(_ mesh: Surface, crease: Surface, attachment input: [V], wrist: V, bodyCenter: V, running: Float, tucked: Float) {
+        guard mesh.inputsChanged(input + [wrist, bodyCenter, V(running, tucked, 0)]) else { return }
         var p = input
         let center = (p[0] + p[1] + p[2]) / 3
         let axis = simd_normalize(wrist - center)
@@ -677,7 +930,10 @@ import Metal
         // directly produced three flat fins, especially visible in night light.
         let radiusU = max(1.5, p.map { abs(simd_dot($0 - center, u)) }.max()!)
         let radiusV = max(1.5, p.map { abs(simd_dot($0 - center, v)) }.max()!)
-        let inward = bodyCenter - center
+        var inward = bodyCenter - center
+        // A resting leg is laid along the ground, including its buried root.
+        // Pulling that root upward made the exposed forearm a standing strut.
+        inward.y *= 1 - tucked
         let buriedRoot = center + inward * min(1, 10 / max(0.001, simd_length(inward)))
         let radial = Self.legCircle.map { u * $0.x + v * $0.y }
         for j in 0...rings {
@@ -707,8 +963,8 @@ import Metal
         }
     }
 
-    private func paw(_ mesh: Surface, wrist: V, toe: V) {
-        guard mesh.inputsChanged([wrist, toe]) else { return }
+    private func paw(_ mesh: Surface, wrist: V, toe: V, tucked: Float) {
+        guard mesh.inputsChanged([wrist, toe, V(tucked, 0, 0)]) else { return }
         let direction = toe - wrist
         let axis = simd_length_squared(direction) > 1e-8 ? simd_normalize(direction) : V(1, 0, 0)
         let width = simd_normalize(abs(axis.y) < 0.9 ? simd_cross(axis, V(0, 1, 0)) : simd_cross(axis, V(0, 0, 1)))
@@ -721,15 +977,16 @@ import Metal
             let angle = Float(j) / Float(rings) * .pi
             let t = (1 - cos(angle)) * 0.5
             let roundEnd = sin(angle)
-            let arch = sin(t * .pi) * 0.35
+            let arch = sin(t * .pi) * (0.35 - 0.27 * tucked)
             let center = wrist + direction * t + V(0, arch, 0)
             // A narrow wrist, soft palm and flattened, rounded toes all deform together.
-            let palm = 0.9 + 0.25 * smooth(t * 2)
+            let palm = 0.9 + 0.25 * smooth(t * 2) + 0.25 * tucked
             for i in 0..<sides {
                 let a = Self.pawCircle[i]
                 vertices.append(center + roundEnd * (width * (a.x * palm) + thickness * (a.y * 0.78)))
             }
         }
+        mesh.outlineWeights = Array(repeating: 1, count: vertices.count)
         mesh.update(vertices, [topology(rings: rings, sides: sides)])
     }
 

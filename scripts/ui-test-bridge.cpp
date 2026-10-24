@@ -15,6 +15,7 @@ static V testIdleDecision(V,const Args&){return {};}
 extern "C" void HamsterTestConfigureScenario(int scenario,double heading){
     E->pettingMilliseconds=0;
     V h=G(E->root,P_ham);
+    cancelCushionSleep(h);
     R(h,P_decideWhatToDo)=function(scenario==0?testIdleDecision:Hamster_decideWhatToDo);
     R(h,P_runAt)=V(1e9);
     E->timers.clear();
@@ -64,4 +65,15 @@ extern "C" void HamsterTestRetarget(double x,double y){
     V h=G(E->root,P_ham);R(h,P_dest)=object({{P_x,V(x)},{P_y,V(y)}});
     R(h,P_lookHere)=G(h,P_dest);R(h,P_goingTo)=G(G(E->globals,P_Hamster),P_RANDOM);
     R(h,P_cleaning)=V(false);
+}
+
+extern "C" void HamsterTestSetGroundPosition(double x){R(G(E->root,P_ham),P__x)=V(x);}
+
+extern "C" double HamsterTestSkinDistance(HamsterRigPoint point){
+    hamster_body::Field field(E);field.prepare();return field(hamster_body::point(point));
+}
+
+extern "C" int HamsterTestHiddenByBodyFromAbove(HamsterRigPoint p){
+    double hit=HamsterEngineHitBodySegment(E,{p.x,p.y+120,p.z,0},p);
+    return hit>=0 && hit<.999;
 }

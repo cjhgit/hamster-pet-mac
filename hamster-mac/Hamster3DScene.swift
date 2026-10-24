@@ -16,6 +16,8 @@ import MetalKit
     let hamster = SCNNode()
     private var model: HamsterDeformableModel!
     private let wheel = SCNNode()
+    private let cushion = SCNNode()
+    static let cushionCenter = SCNVector3(80, 0, 42)
     private let lamp = SCNNode()
     private let bulbLight = SCNNode()
     private let ambient = SCNNode()
@@ -68,6 +70,7 @@ import MetalKit
         keyLight.eulerAngles = SCNVector3(-0.7, -0.5, 0)
         scene.rootNode.addChildNode(keyLight)
         buildHabitat()
+        buildCushion()
         buildWheel()
         buildBottle()
         buildLamp()
@@ -172,6 +175,99 @@ import MetalKit
         let floor = SCNCylinder(radius: 210, height: 1)
         floor.radialSegmentCount = 128
         _ = mesh(floor, color: floorColor, name: "Habitat floor", parent: root)
+    }
+
+    private func buildCushion() {
+        cushion.name = "Sleeping cushion"
+        cushion.position = Self.cushionCenter
+        scene.rootNode.addChildNode(cushion)
+        let fabric = NSColor(srgbRed: 0.76, green: 0.61, blue: 0.48, alpha: 1)
+        let filling = NSColor(srgbRed: 0.91, green: 0.80, blue: 0.65, alpha: 1)
+        // A flat underside slightly overlaps the floor (top at y = 0.5),
+        // so the entire footprint stays grounded instead of tapering to a point.
+        let base = SCNCylinder(radius: 52, height: 0.6)
+        base.radialSegmentCount = 96
+        mesh(base, color: fabric, name: "Cushion soft base",
+             parent: cushion, at: .init(0, 0.7, 0))
+        ellipsoid(.init(50, 0.35, 50), color: filling, name: "Cushion plush center",
+                  parent: cushion, at: .init(0, 0.85, 0), outline: 0)
+        let rim = SCNTorus(ringRadius: 49, pipeRadius: 2)
+        rim.ringSegmentCount = 80
+        rim.pipeSegmentCount = 16
+        let edge = mesh(rim, color: fabric, name: "Cushion padded rim", parent: cushion, at: .init(0, 0.8, 0))
+        edge.scale.y = 0.15
+        // Small contrasting stitches follow the circular seam in world space.
+        for i in 0..<32 {
+            let angle = Float(i) * 2 * .pi / 32
+            ellipsoid(.init(0.45, 0.08, 0.9), color: filling, name: "Cushion stitch",
+                      parent: cushion, at: .init(49 * cos(angle), 1.13, 49 * sin(angle)), outline: 0)
+        }
+        buildCushionPortrait()
+        flattenGeometry(in: cushion)
+    }
+
+    private func buildCushionPortrait() {
+        let printColor = NSColor(srgbRed: 0.43, green: 0.30, blue: 0.22, alpha: 1)
+        let image = NSImage(size: .init(width: 512, height: 512), flipped: false) { _ in
+            func oval(_ rect: NSRect, _ fill: NSColor, stroke: Bool = false) {
+                let path = NSBezierPath(ovalIn: rect)
+                fill.setFill(); path.fill()
+                if stroke { printColor.setStroke(); path.lineWidth = 7; path.stroke() }
+            }
+            let fur = NSColor(srgbRed: 0.76, green: 0.52, blue: 0.31, alpha: 1)
+            let cream = NSColor(srgbRed: 1, green: 0.92, blue: 0.77, alpha: 1)
+            let pink = NSColor(srgbRed: 0.87, green: 0.62, blue: 0.52, alpha: 1)
+            oval(.init(x: 103, y: 314, width: 104, height: 112), fur, stroke: true)
+            oval(.init(x: 305, y: 314, width: 104, height: 112), fur, stroke: true)
+            oval(.init(x: 126, y: 337, width: 58, height: 64), pink)
+            oval(.init(x: 328, y: 337, width: 58, height: 64), pink)
+            oval(.init(x: 89, y: 105, width: 334, height: 283), fur, stroke: true)
+            oval(.init(x: 115, y: 116, width: 282, height: 179), cream)
+            oval(.init(x: 159, y: 240, width: 25, height: 32), printColor)
+            oval(.init(x: 328, y: 240, width: 25, height: 32), printColor)
+            oval(.init(x: 165, y: 257, width: 7, height: 9), cream)
+            oval(.init(x: 334, y: 257, width: 7, height: 9), cream)
+            oval(.init(x: 130, y: 198, width: 49, height: 25), pink)
+            oval(.init(x: 333, y: 198, width: 49, height: 25), pink)
+            oval(.init(x: 240, y: 208, width: 32, height: 22), pink, stroke: true)
+            let smile = NSBezierPath()
+            smile.move(to: .init(x: 256, y: 207)); smile.line(to: .init(x: 256, y: 189))
+            smile.curve(to: .init(x: 225, y: 185), controlPoint1: .init(x: 245, y: 176), controlPoint2: .init(x: 233, y: 176))
+            smile.move(to: .init(x: 256, y: 189))
+            smile.curve(to: .init(x: 287, y: 185), controlPoint1: .init(x: 267, y: 176), controlPoint2: .init(x: 279, y: 176))
+            smile.lineWidth = 6; smile.lineCapStyle = .round
+            printColor.setStroke(); smile.stroke()
+            return true
+        }
+        // Conform the print to the plush dome rather than floating a flat card.
+        let segments = 24
+        var vertices: [SCNVector3] = [], normals: [SCNVector3] = []
+        var uv: [CGPoint] = [], indices: [Int32] = []
+        for j in 0...segments {
+            for i in 0...segments {
+                let u = Float(i) / Float(segments), v = Float(j) / Float(segments)
+                let x = (u - 0.5) * 64, z = (v - 0.5) * 64
+                let y = 0.85 + 0.35 * sqrt(max(0, 1 - (x * x + z * z) / 2500)) + 0.02
+                vertices.append(.init(x, y, z)); normals.append(.init(0, 1, 0))
+                uv.append(.init(x: CGFloat(u), y: CGFloat(v)))
+                if i < segments && j < segments {
+                    let a = Int32(j * (segments + 1) + i), b = a + Int32(segments + 1)
+                    indices += [a, b, a + 1, a + 1, b, b + 1]
+                }
+            }
+        }
+        let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices), SCNGeometrySource(normals: normals),
+                                            SCNGeometrySource(textureCoordinates: uv)],
+                                   elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
+        let fabricPrint = SCNMaterial()
+        fabricPrint.diffuse.contents = image
+        fabricPrint.lightingModel = .lambert
+        fabricPrint.transparencyMode = .aOne
+        fabricPrint.writesToDepthBuffer = false
+        geometry.materials = [fabricPrint]
+        let portrait = SCNNode(geometry: geometry)
+        portrait.name = "Cushion cartoon hamster portrait"
+        cushion.addChildNode(portrait)
     }
 
     private func ring(radius: CGFloat, tube: CGFloat, color: NSColor, name: String, z: CGFloat, parent: SCNNode) {
@@ -303,6 +399,18 @@ import MetalKit
         hamster.addChildNode(model.root)
     }
 
+    var showsSkeleton: Bool {
+        get { model.showsSkeleton }
+        set {
+            SCNTransaction.begin()
+            SCNTransaction.disableActions = true
+            model.showsSkeleton = newValue
+            SCNTransaction.commit()
+            view.presentFrame()
+        }
+    }
+    var hamsterSkeletonSegments: [[SIMD3<Float>]] { model.skeletonSegments }
+
     func update(night: Bool) {
         let state = HamsterEngineGetSceneState(engine)
         var changed = false
@@ -315,19 +423,22 @@ import MetalKit
             hamsterDepth += ((state.onWheel != 0 ? -24 : 42) - hamsterDepth) * 0.18
             lastPoseFrame = poseFrame
         }
-        let position = SCNVector3(CGFloat(x), 210 - state.y, CGFloat(hamsterDepth))
+        let rotation = CGFloat(-state.rotation * .pi / 180)
+        let cushionDistance = hypot(x - Float(Self.cushionCenter.x), hamsterDepth - Float(Self.cushionCenter.z))
+        let cushionLift: Float = state.onWheel == 0 ? max(0, min(1, (60 - cushionDistance) / 22)) * 1.2 : 0
+        let revision = model.geometryRevision
+        model.update(groundLift: cushionLift)
+        changed = changed || revision != model.geometryRevision
+        let height = CGFloat(model.groundedOriginHeight)
+        let position = SCNVector3(CGFloat(x), height, CGFloat(hamsterDepth))
         if simd_distance_squared(hamster.simdPosition, SIMD3<Float>(Float(position.x), Float(position.y), Float(position.z))) > 0.0005 * 0.0005 {
             hamster.position = position
             changed = true
         }
-        let rotation = CGFloat(-state.rotation * .pi / 180)
         if abs(hamster.eulerAngles.z - rotation) > 0.000005 {
             hamster.eulerAngles.z = rotation
             changed = true
         }
-        let revision = model.geometryRevision
-        model.update()
-        changed = changed || revision != model.geometryRevision
         let wheelAngle = CGFloat(-state.wheelAngle)
         if abs(wheel.eulerAngles.z - wheelAngle) > 0.000005 {
             wheel.eulerAngles.z = wheelAngle
@@ -375,6 +486,11 @@ import MetalKit
 
     var hamsterLandmarks: [SIMD3<Float>] { model.landmarks }
     var hamsterBodyVertices: [SIMD3<Float>] { model.bodyPositionsForInspection }
+    var hamsterGroundVertices: [SIMD3<Float>] { model.groundVerticesForInspection }
+    var hamsterPawVertices: [[SIMD3<Float>]] { model.pawVerticesForInspection }
+    var hamsterRestingBones: [[SIMD3<Float>]] { model.restingBones }
+    var hamsterLimbVertices: [[SIMD3<Float>]] { model.limbVerticesForInspection }
+    var hamsterLimbSilhouettes: [[SIMD3<Float>]] { model.limbSilhouettesForInspection }
     var bodyMeshingBackend: String { model.bodyMeshingBackend }
     var bodyGPUSeconds: Double { model.bodyGPUSeconds }
     var inspectionCenter: SIMD3<Float> { focusPoint }
@@ -467,7 +583,7 @@ import MetalKit
         return NSPoint(x: CGFloat(x), y: CGFloat(y))
     }
 
-    enum InteractionTarget { case wheel, water, hamster }
+    enum InteractionTarget { case wheel, water, hamster, cushion }
 
     func interactionTarget(at point: NSPoint) -> InteractionTarget? {
         let halfHeight = Float(camera.camera?.orthographicScale ?? 109)
@@ -492,6 +608,7 @@ import MetalKit
             var node: SCNNode? = hit.node
             while let current = node {
                 if current === hamster { return .hamster }
+                if current === cushion { return .cushion }
                 if current.name == "wheelHub" { return .wheel }
                 // Use bottle-local height so the bottom, cap and nozzle stay
                 // clickable after orbiting, zooming or flattening geometry.

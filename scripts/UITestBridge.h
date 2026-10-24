@@ -13,3 +13,9 @@ void HamsterTestConfigureScenario(int scenario, double heading);
 void HamsterTestDrawHamster(CGContextRef context);
 HamsterRigPoint HamsterTestRigPoint(int index);
 void HamsterTestRetarget(double x, double y);
+
+void HamsterTestSetGroundPosition(double x);
+
+double HamsterTestSkinDistance(HamsterRigPoint point);
+
+int HamsterTestHiddenByBodyFromAbove(HamsterRigPoint point);

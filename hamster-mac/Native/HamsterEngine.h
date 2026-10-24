@@ -12,6 +12,7 @@ void HamsterEngineStart(void *engine);
 void HamsterEngineSetWatermarkVisible(void *engine, int visible);
 void HamsterEngineStep(void *engine, double elapsedMilliseconds);
 void HamsterEngineRequestDrink(void *engine);
+void HamsterEngineRequestSleep(void *engine, double x);
 // Brake and finish footfalls, then relax for three seconds; repeated pets extend it.
 void HamsterEnginePet(void *engine);
 int HamsterEngineGetFrameCount(void *engine);
@@ -22,11 +23,14 @@ typedef struct {
     int onWheel, sleeping, eating, cleaning, moving;
     double rotation, speed;
     int petting; // 0 normal, 1 braking/settling, 2 relaxed hold
+    int preparingSleep; // Arrived and lowering into the sleeping pose.
 } HamsterSceneState;
 typedef struct { double x, y, z; int curve; } HamsterRigPoint;
 // Intersection with the authored body surface in hamster-local coordinates.
 // Returns a segment fraction, or -1 when the body is missed. No GPU readback.
 double HamsterEngineHitBodySegment(void *engine, HamsterRigPoint from, HamsterRigPoint to);
+// Lowest point on the authored skin along the rotated world vertical.
+double HamsterEngineGetBodyContactHeight(void *engine, double rotation);
 // 0 rear torso, 1 front torso, 2 head, 3 tail. Then FR, FL, RR, RL,
 // five points each: front attachment, side attachment, rear attachment, wrist, toe.
 HamsterRigPoint HamsterEngineGetRigPoint(void *engine, int index);

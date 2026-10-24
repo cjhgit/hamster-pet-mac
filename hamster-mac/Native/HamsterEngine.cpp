@@ -85,6 +85,9 @@ struct Engine {
     double pettingMilliseconds=0;
     double pettingBrakeMilliseconds=0,pettingStrideScale=1;
     bool pettingSettled=false;
+    bool cushionSleepRequested=false;
+    double sleepPoseBlend=0;
+    double cushionX=220;
     std::vector<HamsterVertex> metalVertices;
     std::vector<HamsterDrawCommand> metalCommands;
     std::vector<HamsterBodyVertex> bodyVertices;
@@ -274,6 +277,37 @@ V builtinCancel(V,const Args& a){E->timers.erase(int(number(arg(a,0))));return {
 
 #include "Original.hpp"
 
+// Keep the original gait, wheel exit and curled sleeping pose, while giving
+// the explicit cushion request priority over wandering, food and mouse tracking.
+V cushionSleepDecision(V h,const Args&){
+    if(bool(G(h,P_isOnWheel))){
+        R(h,P_getOffWheel)=V(true);
+        R(h,P_isTired)=V(true);
+        R(h,P_runAt)=V(1e12);
+        return {};
+    }
+    const double dx=E->cushionX-number(G(h,P__x));
+    if(std::abs(dx)<18 || bool(G(h,P_sleepAtDest))){
+        R(h,P_dest)=V();
+        R(h,P_goingTo)=G(G(E->globals,P_Hamster),P_NOTHING);
+        R(h,P_sleepAtDest)=V(true);
+    }else{
+        // The native walk target is measured from the nose, 50 units ahead.
+        R(h,P_dest)=object({{P_x,V(E->cushionX+(dx>0?50:-50))},{P_y,V(205)}});
+        R(h,P_lookHere)=G(h,P_dest);
+        R(h,P_goingTo)=G(G(E->globals,P_Hamster),P_RANDOM);
+    }
+    return {};
+}
+void cancelCushionSleep(V h){
+    if(!E->cushionSleepRequested)return;
+    E->cushionSleepRequested=false;
+    for(auto it=E->timers.begin();it!=E->timers.end();){
+        if(it->second.target.o==h.o && text(it->second.method)=="sleep")it=E->timers.erase(it);
+        else ++it;
+    }
+    call(h,P_wakeUp,{});
+}
 V petIdleDecision(V,const Args&){return {};}
 V petStepTo(V leg,const Args& args){
     V target=arg(args,0);
@@ -460,13 +494,48 @@ void HamsterEngineStep(void *engine,double elapsed){
     if(petting)for(auto &entry:E->timers)if(entry.second.target.o==h.o)entry.second.at+=elapsed;
     advance(elapsed);
     call(E->root,P_onEnterFrame,{});
-    if(!petting)call(h,P_onEnterFrame,{});
+    if(!petting){
+        V decision=G(h,P_decideWhatToDo), mouseActive=G(E->root,P_mouseActive);
+        if(E->cushionSleepRequested){
+            R(h,P_decideWhatToDo)=function(cushionSleepDecision);
+            R(E->root,P_mouseActive)=V(false);
+        }
+        call(h,P_onEnterFrame,{});
+        if(E->cushionSleepRequested){
+            R(h,P_decideWhatToDo)=decision;
+            R(E->root,P_mouseActive)=mouseActive;
+        }
+    }
     else if(!E->pettingSettled)settleForPetting(h,elapsed);
     else E->pettingMilliseconds=std::max(0.0,E->pettingMilliseconds-elapsed);
+    const bool lying=(!bool(G(h,P_isOnWheel))) &&
+        (bool(G(h,P_sleeping)) || (bool(G(h,P_sleepAtDest)) && !bool(G(h,P_dest))));
+    const double poseStep=elapsed/260.0;
+    E->sleepPoseBlend+=std::clamp((lying?1.0:0.0)-E->sleepPoseBlend,-poseStep,poseStep);
     if(++E->frames%30==0)E->collect();
+}
+void HamsterEngineRequestSleep(void *engine,double x){
+    E=static_cast<Engine*>(engine);
+    V h=G(E->root,P_ham);
+    if(E->cushionSleepRequested)return;
+    E->pettingMilliseconds=0;
+    E->cushionSleepRequested=true;
+    E->cushionX=std::clamp(x,60.0,240.0);
+    // Old action callbacks must not interrupt arrival or wake it on the bed.
+    for(auto it=E->timers.begin();it!=E->timers.end();){
+        if(it->second.target.o==h.o)it=E->timers.erase(it);else ++it;
+    }
+    if(bool(G(h,P_eating)))call(h,P_stopEating,{});
+    call(h,P_wakeUp,{});
+    R(h,P_sleepID)=V();
+    R(h,P_drinking)=V(false);R(h,P_cleaning)=V(false);
+    R(h,P_stopDrinkAt)=V();R(h,P_drinkStartAt)=V();R(h,P_stopCleanAt)=V();
+    R(h,P_getOnWheel)=V(false);R(h,P_wheelClicked)=V(false);
+    cushionSleepDecision(h,{});
 }
 void HamsterEnginePet(void *engine){
     E=static_cast<Engine*>(engine);
+    cancelCushionSleep(G(E->root,P_ham));
     call(G(E->root,P_ham),P_wakeUp,{});
     if(E->pettingMilliseconds<=0){E->pettingBrakeMilliseconds=0;E->pettingSettled=false;}
     E->pettingMilliseconds=3000;
@@ -475,6 +544,7 @@ void HamsterEngineRequestDrink(void *engine){
     E=static_cast<Engine*>(engine);
     E->pettingMilliseconds=0;
     V h=G(E->root,P_ham);
+    cancelCushionSleep(h);
     if(bool(G(h,P_drinking)))return;
     call(h,P_wakeUp,{});
     if(bool(G(h,P_sleepID))){
@@ -486,7 +556,7 @@ void HamsterEngineRequestDrink(void *engine){
     R(h,P_waterLevel)=V(0);
     if(!bool(G(h,P_eating))&&!bool(G(h,P_cleaning)))Hamster_decideWhatToDo(h,{});
 }
-void HamsterEngineMouse(void *engine,double x,double y,int action){E=static_cast<Engine*>(engine);if(action!=2){R(E->root,P__xmouse)=V(x);R(E->root,P__ymouse)=V(y);}if(action==0)call(E->root,P_onMouseMove,{});if(action==1){E->pettingMilliseconds=0;call(E->root,P_onMouseMove,{});call(E->root,P_onMouseDown,{});}if(action==2)call(E->root,P_onMouseUp,{});}
+void HamsterEngineMouse(void *engine,double x,double y,int action){E=static_cast<Engine*>(engine);if(action!=2){R(E->root,P__xmouse)=V(x);R(E->root,P__ymouse)=V(y);}if(action==0)call(E->root,P_onMouseMove,{});if(action==1){cancelCushionSleep(G(E->root,P_ham));E->pettingMilliseconds=0;call(E->root,P_onMouseMove,{});call(E->root,P_onMouseDown,{});}if(action==2)call(E->root,P_onMouseUp,{});}
 void HamsterEnginePurgeRenderCache(void *engine){
     E=static_cast<Engine*>(engine);
     for(int key:{P_bg,P_wheel}) {
@@ -523,11 +593,12 @@ HamsterSceneState HamsterEngineGetSceneState(void *engine){
     E=static_cast<Engine*>(engine); V h=G(E->root,P_ham);
     auto n=[&](V v,int key,double fallback=0.0){double x=number(G(v,key));return std::isfinite(x)?x:fallback;};
     return {n(h,P__x),n(h,P__y),n(h,P_ang),n(h,P_standToAng,6.283185307179586),
-        n(h,P_headAng),n(h,P_headAngZ),n(E->root,P_wheelAng),n(h,P_angVel),
+        n(h,P_headAng)*(1-E->sleepPoseBlend),n(h,P_headAngZ)*(1-E->sleepPoseBlend),n(E->root,P_wheelAng),n(h,P_angVel),
         pettingEyeFraction(n(h,P_eyesCloseFrac,1)),n(h,P_waterLevel,10),
         bool(G(h,P_isOnWheel)),bool(G(h,P_sleeping)),bool(G(h,P_eating)),bool(G(h,P_cleaning)),
         !(E->pettingMilliseconds>0&&E->pettingSettled)&&(bool(G(h,P_dest)) || (bool(G(h,P_isOnWheel)) && !bool(G(h,P_isTired)))),n(h,P__rotation),n(h,P_legVel),
-        E->pettingMilliseconds>0?(E->pettingSettled?2:1):0};
+        E->pettingMilliseconds>0?(E->pettingSettled?2:1):0,
+        bool(G(h,P_sleepAtDest)) && !bool(G(h,P_dest)) && !bool(G(h,P_isOnWheel))};
 }
 
 namespace {
@@ -541,7 +612,15 @@ HamsterRigPoint HamsterEngineGetRigPoint(void *engine,int index){
         const int keys[]={P_rearBodyPt,P_frontBodyPt,P_headPos,P_tailPos};
         if(index<0)return {};
         V p=G(h,keys[index]);
-        return {rigNumber(p,P_xpos),-rigNumber(p,P_ypos),si*rigNumber(p,P_x)-co*rigNumber(p,P_z),0};
+        double height=-rigNumber(p,P_ypos);
+        if(index==2){
+            // Lower the rigid head at the neck while leveling its pitch. Rest
+            // on the cheek/chest contour instead of driving the nose downward.
+            double restingHeight=std::min(-rigNumber(G(h,P_rearBodyPt),P_ypos),
+                                          -rigNumber(G(h,P_frontBodyPt),P_ypos))-3.5;
+            height+=(restingHeight-height)*E->sleepPoseBlend;
+        }
+        return {rigNumber(p,P_xpos),height,si*rigNumber(p,P_x)-co*rigNumber(p,P_z),0};
     }
     int legIndex=(index-4)/5,part=(index-4)%5;
     const int legs[]={P_legFR,P_legFL,P_legRR,P_legRL};
@@ -579,13 +658,19 @@ HamsterRigPoint HamsterEngineGetRigFeatureLocalPoint(void *engine,int feature,in
     double x=rigNumber(p,P_x)+rigNumber(center,P_x),y=rigNumber(p,P_y),z=rigNumber(p,P_z)+side*gap;
     if(eye)y*=pettingEyeFraction(std::clamp(rigNumber(h,P_eyesCloseFrac,1),.03,1.0));
     y+=rigNumber(center,P_y);
-    return {x,-y,-z,bool(G(p,P_curve))};
+    const double delta=-rigNumber(h,P_headAngZ)*E->sleepPoseBlend;
+    const double cx=rigNumber(center,P_x),cy=-rigNumber(center,P_y);
+    // Eye/ear contours are authored in their own local frame. Level their
+    // head-mounted centers, without tilting a closed eyelid into a diagonal.
+    x+=cos(delta)*cx+sin(delta)*cy-cx;
+    const double upY=-y-sin(delta)*cx+cos(delta)*cy-cy;
+    return {x,upY,-z,bool(G(p,P_curve))};
 }
 HamsterRigPoint HamsterEngineGetRigFeaturePoint(void *engine,int feature,int index){
     if(index<0 || index>=HamsterEngineGetRigFeatureCount(engine,feature))return {};
     auto p=HamsterEngineGetRigFeatureLocalPoint(engine,feature,index);
     V h=G(E->root,P_ham);
-    double a=rigNumber(h,P_ang)+rigNumber(h,P_headAng),co=cos(a),si=sin(a);
+    double a=rigNumber(h,P_ang)+rigNumber(h,P_headAng)*(1-E->sleepPoseBlend),co=cos(a),si=sin(a);
     HamsterRigPoint head=HamsterEngineGetRigPoint(engine,2);
     return {head.x+co*p.x-si*p.z,head.y+p.y,head.z+si*p.x+co*p.z,p.curve};
 }

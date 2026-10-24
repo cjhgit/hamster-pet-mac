@@ -1,5 +1,6 @@
 import AppKit
 import SceneKit
+import simd
 import Darwin
 
 @main struct Verify3D {
@@ -17,8 +18,8 @@ import Darwin
         window.contentView = view
         window.setContentSize(.init(width: 900, height: 677))
         let renderer = view.scene3D!
-        func save(_ name: String) throws {
-            let image = renderer.snapshot(size: .init(width: 1200, height: 900))
+        func save(_ name: String, size: CGSize = .init(width: 1200, height: 900)) throws {
+            let image = renderer.snapshot(size: size)
             let bitmap = NSBitmapImageRep(data: image.tiffRepresentation!)!
             try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name + ".png"))
         }
@@ -223,6 +224,148 @@ import Darwin
         }
         print("PASS: bottle/wheel hover cursors after orbit/zoom/pan, pause guard, idle/sleep/wheel to completed drinking")
         HamsterTestClearFood()
+        let cushionEdge = SCNVector3(116, 0.9, 70)
+        func assertLimbsAboveFloor() {
+            let vertices = renderer.hamsterGroundVertices
+            precondition(!vertices.isEmpty)
+            let bottom = vertices.map { renderer.hamster.convertPosition(SCNVector3($0), to: nil).y }.min()!
+            precondition(bottom >= 0.499,
+                         "Visible limbs and outlines must never pass through the floor, including during sleep entry: \(bottom)")
+        }
+        func clickCushion() {
+            let p = view.convert(renderer.view.convert(renderer.project(cushionEdge), to: nil), from: nil)
+            view.mouseDown(with: event(.leftMouseDown, p))
+            view.mouseUp(with: event(.leftMouseUp, p))
+        }
+        HamsterTestConfigureScenario(0, 0)
+        renderer.update(night: false)
+        for preset in [0, 1, 3, 4] {
+            renderer.preset(preset)
+            precondition(renderer.interactionTarget(at: renderer.project(cushionEdge)) == .cushion,
+                         "Cushion must be hittable at preset \(preset)")
+            hover(cushionEdge, cursor: .pointingHand)
+        }
+        renderer.preset(0)
+        let cushionPause = view.makeSettingsMenu()
+        cushionPause.performActionForItem(at: cushionPause.index(of: cushionPause.item(withTitle: "暂停播放")!))
+        hover(cushionEdge, cursor: .arrow)
+        clickCushion()
+        for _ in 0..<150 { HamsterTestStep() }
+        precondition(HamsterEngineGetSceneStateForTest().sleeping == 0, "Paused cushion click must do nothing")
+        let cushionResume = view.makeSettingsMenu()
+        cushionResume.performActionForItem(at: cushionResume.index(of: cushionResume.item(withTitle: "继续播放")!))
+        for scenario: Int32 in [0, 1, 2, 3, 4, 5, 6] {
+            HamsterTestConfigureScenario(scenario, 0)
+            renderer.update(night: false)
+            clickCushion()
+            var preparingFrames = 0
+            for _ in 0..<1800 {
+                HamsterTestStep()
+                renderer.update(night: false)
+                let state = HamsterEngineGetSceneStateForTest()
+                if state.onWheel == 0 { assertLimbsAboveFloor() }
+                if state.preparingSleep != 0 { preparingFrames += 1 }
+                if state.sleeping != 0 { break }
+            }
+            precondition(preparingFrames > 0, "Verify the transition before the sleeping flag is set")
+            let asleep = HamsterEngineGetSceneStateForTest()
+            print("CUSHION", scenario, asleep.x, asleep.sleeping, asleep.onWheel)
+            precondition(asleep.sleeping != 0 && asleep.onWheel == 0 && abs(asleep.x - 220) < 25,
+                         "Hamster must walk to the cushion and sleep from scenario \(scenario)")
+            // Hovering the bed must not immediately undo the user's sleep request.
+            hover(cushionEdge, cursor: .pointingHand)
+            for frame in 0..<150 {
+                HamsterTestStep()
+                renderer.update(night: false)
+                assertLimbsAboveFloor()
+                if frame % 30 == 0 {
+                    let skin = renderer.hamsterBodyVertices
+                    precondition(!skin.isEmpty)
+                    let bottom = skin.map { renderer.hamster.convertPosition(SCNVector3($0), to: nil).y }.min()!
+                    let gap = bottom - 0.5
+                    precondition(gap >= -0.15 && gap <= 1.5,
+                                 "Sleeping belly must touch the floor, allowing intersection with the cushion: gap \(gap)")
+                }
+            }
+            precondition(HamsterEngineGetSceneStateForTest().sleeping != 0)
+            precondition(abs(HamsterEngineGetSceneStateForTest().headPitch) < 0.01,
+                         "The sleeping head must lie level instead of pitching nose-down")
+            for (leg, vertices) in renderer.hamsterPawVertices.enumerated() {
+                let exposed = vertices.filter { p in
+                    HamsterTestSkinDistance(.init(x: Double(p.x), y: Double(p.y), z: Double(p.z), curve: 0)) > 0.15
+                }.count
+                precondition(exposed >= 3, "Curled paw \(leg) must remain visible outside the coat")
+                let bones = renderer.hamsterRestingBones[leg]
+                let offset = 4 + leg * 5
+                let root = renderer.hamsterLandmarks[offset..<(offset + 3)].reduce(SIMD3<Float>.zero, +) / 3
+                precondition(simd_distance(root, bones[0]) < 0.001, "Shoulder/hip must remain attached to the original body")
+                let skinConnection = renderer.hamsterLimbVertices[leg].prefix(96).contains { p in
+                    HamsterTestSkinDistance(.init(x: Double(p.x), y: Double(p.y), z: Double(p.z), curve: 0)) < -0.5
+                }
+                precondition(skinConnection, "Upper-limb muscle must overlap the body skin, with no detached root")
+                precondition(abs(simd_distance(bones[0], bones[1]) - (leg < 2 ? 10 : 13)) < 0.01
+                             && abs(simd_distance(bones[1], bones[2]) - (leg < 2 ? 9 : 13)) < 0.01,
+                             "Folding must rotate fixed-length bones, not relocate the limb")
+                let heading = Float(HamsterEngineGetSceneStateForTest().heading)
+                let forward = SIMD3<Float>(cos(heading), 0, sin(heading))
+                let foot = simd_normalize(bones[3] - bones[2])
+                precondition(simd_dot(foot, forward) > 0.99, "Toes must point forward along the body, not backward")
+                let lowest = vertices.map { p in
+                    renderer.hamster.convertPosition(SCNVector3(p), to: nil).y
+                }.min()!
+                precondition(lowest >= 0.499 && lowest <= 1.8,
+                             "Resting paw \(leg) must lie on the floor beside the body: \(lowest)")
+                let silhouette = renderer.hamsterLimbSilhouettes[leg]
+                for i in stride(from: 0, to: silhouette.count, by: 8) {
+                    let p = silhouette[i]
+                    precondition(HamsterTestHiddenByBodyFromAbove(.init(x: Double(p.x), y: Double(p.y), z: Double(p.z), curve: 0)) != 0,
+                                 "Sleeping limb \(leg) and its outline must be occluded by the body from above: \(p)")
+                }
+            }
+            precondition(HamsterTestFoodCount() == 0 && HamsterTestDragging() == 0)
+            renderer.update(night: false)
+            if scenario == 2 {
+                renderer.preset(1); try save("cushion-sleep")
+                renderer.inspectHamster(yaw: 0, pitch: 0.08, zoom: 2.1); try save("cushion-sleep-front")
+                renderer.inspectHamster(yaw: .pi / 2, pitch: 0.08, zoom: 2.1); try save("cushion-sleep-side")
+                renderer.inspectHamster(yaw: 0, pitch: .pi / 2 - 0.015, zoom: 2.1); try save("cushion-sleep-top")
+                renderer.preset(0)
+                try save("cushion-sleep-window-size", size: .init(width: 371, height: 280))
+            }
+            clickBottle()
+            for _ in 0..<900 {
+                HamsterTestStep()
+                if HamsterEngineGetSceneStateForTest().waterLevel > 0 { break }
+            }
+            precondition(HamsterEngineGetSceneStateForTest().waterLevel > 0,
+                         "A new drink request must cancel cushion sleep")
+        }
+        print("PASS: cushion hit testing, hand cursor, pause guard, seven activities to sleep, hover persistence and wake to drink")
+        for heading in [0.0, Double.pi / 2, Double.pi] {
+            for location in [65.0, 220.0] {
+                HamsterTestConfigureScenario(6, heading)
+                HamsterTestSetGroundPosition(location)
+                for _ in 0..<30 {
+                    HamsterTestStep()
+                    renderer.update(night: false)
+                    let bottom = renderer.hamsterBodyVertices.map {
+                        renderer.hamster.convertPosition(SCNVector3($0), to: nil).y
+                    }.min()!
+                    assertLimbsAboveFloor()
+                    let gap = bottom - 0.5
+                    precondition(gap >= -0.15 && gap <= 1.5,
+                                 "Sleeping belly must stay in contact at heading \(heading): gap \(gap)")
+                }
+                if heading == 0 && location == 65 {
+                    renderer.inspectHamster(yaw: -0.4, pitch: 0.12, zoom: 2.1); try save("floor-sleep")
+                    renderer.inspectHamster(yaw: 0, pitch: 0.08, zoom: 2.1); try save("floor-sleep-front")
+                    renderer.preset(0)
+                }
+            }
+        }
+        renderer.preset(0)
+        print("PASS: belly rests on floor under/beside cushion; limbs and outlines stay above floor on every entry frame")
+        HamsterTestClearFood()
         for scenario: Int32 in [0, 1, 2] {
             HamsterTestConfigureScenario(scenario, 0)
             renderer.update(night: false)
@@ -346,6 +489,47 @@ import Darwin
         view.makeSettingsMenu().performActionForItem(at: 3)
         precondition(!prefs.bool(forKey: "hamster.darkMode"))
         print("PASS: camera presets, projection after rotation, zoom limits and interactions")
+        // Toggle while paused: changing representation must not advance the
+        // simulation, and all original controls remain usable.
+        let skeletonPause = view.makeSettingsMenu()
+        skeletonPause.performActionForItem(at: skeletonPause.index(of: skeletonPause.item(withTitle: "暂停播放")!))
+        let beforeSkeleton = renderer.hamsterLandmarks
+        let skeletonMenu = view.makeSettingsMenu()
+        skeletonMenu.performActionForItem(at: skeletonMenu.index(of: skeletonMenu.item(withTitle: "骨骼模式")!))
+        precondition(renderer.showsSkeleton && prefs.bool(forKey: "hamster.skeletonMode"))
+        precondition(renderer.hamsterLandmarks == beforeSkeleton)
+        precondition(view.makeSettingsMenu().item(withTitle: "骨骼模式")?.state == .on)
+        let skinRoot = renderer.hamster.childNode(withName: "Hamster skin", recursively: true)!
+        let skeletonRoot = renderer.hamster.childNode(withName: "Hamster pose skeleton", recursively: true)!
+        precondition(skinRoot.isHidden && !skeletonRoot.isHidden)
+        let skeletonResume = view.makeSettingsMenu()
+        skeletonResume.performActionForItem(at: skeletonResume.index(of: skeletonResume.item(withTitle: "继续播放")!))
+        for scenario: Int32 in [0, 2, 6] {
+            HamsterTestConfigureScenario(scenario, 0)
+            for _ in 0..<16 { HamsterTestStep(); renderer.update(night: false) }
+            let segments = renderer.hamsterSkeletonSegments
+            precondition(simd_distance(segments[0][0], renderer.hamsterLandmarks[0]) < 0.0001)
+            for (leg, chain) in renderer.hamsterRestingBones.enumerated() {
+                for i in 0..<3 {
+                    let segment = segments[2 + leg * 3 + i]
+                    precondition(simd_distance(segment[0], chain[i]) < 0.0001 &&
+                                 simd_distance(segment[1], chain[i + 1]) < 0.0001,
+                                 "Skeleton must use the same sleeping IK as the skin")
+                }
+            }
+            for (i, segment) in segments.enumerated() {
+                let rod = skeletonRoot.childNode(withName: "Pose bone \(i)", recursively: false)!
+                let a = rod.simdConvertPosition(.init(0, -0.5, 0), to: skeletonRoot)
+                let b = rod.simdConvertPosition(.init(0, 0.5, 0), to: skeletonRoot)
+                precondition(simd_distance(a, segment[0]) < 0.001 && simd_distance(b, segment[1]) < 0.001)
+            }
+            renderer.preset(6)
+            try save("skeleton-\(scenario)")
+        }
+        let restoreSkin = view.makeSettingsMenu()
+        restoreSkin.performActionForItem(at: restoreSkin.index(of: restoreSkin.item(withTitle: "骨骼模式")!))
+        precondition(!skinRoot.isHidden && skeletonRoot.isHidden && !prefs.bool(forKey: "hamster.skeletonMode"))
+        print("PASS: skeleton menu, paused toggle, original walk/wheel/sleep pose synchronization and skin restoration")
         print("Screenshots: \(output.path)")
     }
 }
