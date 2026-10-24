@@ -23,7 +23,7 @@ inline double smoothMin(double a,double b,double k){
 }
 struct Field {
     Vec rear,front,head,axis,down,side,headForward,headDown,headSide,center;
-    double torsoLength,runShape;
+    double torsoLength,runShape,softness,phase;
     double extension[4];
     std::array<BodySection,257> bodySections;
     std::array<Profile,257> headSections;
@@ -34,6 +34,12 @@ struct Field {
         down=unit(cross(side,axis));center=(rear+front)*.5;torsoLength=length(front-rear)*.5+20;
         double effort=state.onWheel?std::clamp((state.speed-.15)/.65,0.0,1.0):0;
         runShape=effort*effort*(3-2*effort);
+        // Follow the native gait clock, so pausing or inspecting the same pose
+        // never advances the skin independently of the feet. Fade to rest as
+        // strides shorten, including the last footfalls when stopping.
+        double motion=state.onWheel?std::clamp(state.speed/.8,0.0,1.0):0;
+        softness=motion*motion*(3-2*motion);
+        phase=state.legPhase;
         for(int leg=0;leg<4;leg++){
             Vec base=point(HamsterEngineGetRigPoint(engine,4+5*leg));
             Vec wrist=point(HamsterEngineGetRigPoint(engine,7+5*leg));
@@ -81,6 +87,22 @@ struct Field {
             controls[i].left +=runShape*(.9*extension[3]*hip+.45*extension[1]*shoulder);
             // Hindleg reach pulls the lateral flank, not a separate hanging
             // pouch underneath the pelvis. Keep the ventral curve continuous.
+            // A travelling flex through the waist lets shoulders and hips
+            // respond at different times. Taper at the neck and tail so their
+            // attachments remain stable; the head keeps its native pose.
+            double x=controls[i].x;
+            double envelope=pow(std::max(0.0,1-x*x),2);
+            double wave=sin(2*phase-1.8*x);
+            double bend=softness*envelope*(.12*wave+.04*sin(phase-1.4*x));
+            double squash=1-.04*softness*envelope*sin(2*phase-1.8*x+.65);
+            // Anchor compression at the back. Let belly and flank tissue
+            // yield without making the dorsal silhouette bounce each step.
+            double back=controls[i].back;
+            controls[i].belly=back+(controls[i].belly-back)*squash+bend;
+            controls[i].back=back+bend;
+            // Compensate cross-section area instead of inflating the body.
+            controls[i].right/=squash;
+            controls[i].left/=squash;
         }
         auto value=[&](int i,int component){const auto &s=controls[i];return component==0?s.back:component==1?s.belly:component==2?s.right:s.left;};
         auto slope=[&](int i,int c){
@@ -202,11 +224,14 @@ HamsterBodyField HamsterEngineBuildBodyField(void *engine){
     E=static_cast<Engine*>(engine);
     Field field(engine);
     std::vector<double> signature;
-    signature.reserve(23);
+    signature.reserve(26);
     for(Vec p:{field.rear,field.front,field.head,field.headForward,field.headDown,field.side}){
         signature.push_back(p.x);signature.push_back(p.y);signature.push_back(p.z);
     }
     signature.push_back(field.runShape);
+    signature.push_back(field.softness);
+    signature.push_back(field.softness*sin(field.phase));
+    signature.push_back(field.softness*cos(field.phase));
     for(double extension:field.extension)signature.push_back(extension*field.runShape);
     bool changed=signature.size()!=E->bodyFieldSignature.size();
     if(!changed)for(size_t i=0;i<signature.size();i++)if(std::abs(signature[i]-E->bodyFieldSignature[i])>(i<9?.025:.0008)){changed=true;break;}
@@ -243,11 +268,14 @@ HamsterBodyMesh HamsterEngineBuildBodyMesh(void *engine){
     E=static_cast<Engine*>(engine);
     Field field(engine);
     std::vector<double> signature;
-    signature.reserve(23);
+    signature.reserve(26);
     for(Vec p:{field.rear,field.front,field.head,field.headForward,field.headDown,field.side}){
         signature.push_back(p.x);signature.push_back(p.y);signature.push_back(p.z);
     }
     signature.push_back(field.runShape);
+    signature.push_back(field.softness);
+    signature.push_back(field.softness*sin(field.phase));
+    signature.push_back(field.softness*cos(field.phase));
     for(double extension:field.extension)signature.push_back(extension*field.runShape);
     bool changed=signature.size()!=E->bodySignature.size();
     if(!changed)for(size_t i=0;i<signature.size();i++)if(std::abs(signature[i]-E->bodySignature[i])>(i<9?.025:.0008)){changed=true;break;}
