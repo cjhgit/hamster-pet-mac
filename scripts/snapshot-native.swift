@@ -147,9 +147,10 @@ import CoreText
         }
         let activeView = appDelegate.window!.contentView as! HamsterView
         appDelegate.window?.level = .floating
-        // Headless CI window servers may skip occlusion notifications; the view's
-        // visibility watchdog then restarts animation within ~0.1s, so allow slack.
-        pumpEvents(for: 0.6)
+        // Headless CI window servers deliver no occlusion notifications and no
+        // real draws, so the animation only starts via the visibility watchdog
+        // (0.5s period, 0.2s tolerance); pump long enough for it to fire.
+        pumpEvents(for: 1.5)
         let activeFrames = activeView.simulationFrames
         precondition(activeFrames > 1, "Visible window must animate (frames: \(activeFrames), occlusion: \(appDelegate.window!.occlusionState.rawValue))")
         tray.performActionForItem(at: 0)
