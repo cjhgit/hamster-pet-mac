@@ -233,9 +233,9 @@ import MetalKit
         support.name = "Wheel stand"
         support.position = SCNVector3(27, 105, -24)
         scene.rootNode.addChildNode(support)
-        // A thick wooden post carries the wheel, matching the barrel-style tread.
-        rod(SCNVector3(0, -103, -26), SCNVector3(0, 0, -26), radius: 3.2, color: NSColor(srgbRed: 0.60, green: 0.44, blue: 0.28, alpha: 1), name: "Wheel rear support", parent: support)
-        rod(SCNVector3(-24, -103, -26), SCNVector3(24, -103, -26), radius: 2, color: ink, name: "Wheel stand foot", parent: support)
+        // Keep the entire post behind the rear spokes, including both rods' radii.
+        rod(SCNVector3(0, -103, -32), SCNVector3(0, 0, -32), radius: 3.2, color: NSColor(srgbRed: 0.60, green: 0.44, blue: 0.28, alpha: 1), name: "Wheel rear support", parent: support)
+        rod(SCNVector3(-24, -103, -32), SCNVector3(24, -103, -32), radius: 2, color: ink, name: "Wheel stand foot", parent: support)
         support.addChildNode(wheel)
         wheel.name = "Running wheel"
         // Tread, rims and spokes are rigid parts of this single rotating node.
@@ -249,10 +249,9 @@ import MetalKit
         for angle: Float in [0, 2.0944, 4.1888] {
             rod(SCNVector3(0, 0, -26), SCNVector3(98 * cos(angle), 98 * sin(angle), -26), radius: 1.8, color: color("wheelSpokeColor"), name: "Rear spoke", parent: wheel)
         }
-        // A single hub on the rear side, moved in front of the post so the post
-        // no longer cuts across it from the front view.
-        let hub = SCNCylinder(radius: 8, height: 5)
-        let hubNode = mesh(hub, color: color("wheelCenterColor"), name: "wheelHub", parent: support, at: SCNVector3(0, 0, -22), outline: 0.13)
+        // Extend the hub back to the post while keeping its front face in place.
+        let hub = SCNCylinder(radius: 8, height: 11)
+        let hubNode = mesh(hub, color: color("wheelCenterColor"), name: "wheelHub", parent: support, at: SCNVector3(0, 0, -25), outline: 0.13)
         hubNode.eulerAngles.x = .pi / 2
         flattenGeometry(in: wheel)
         flattenGeometry(in: support, excluding: [wheel])
