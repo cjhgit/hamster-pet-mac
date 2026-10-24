@@ -364,11 +364,17 @@ final class HamsterView: NSView, NSMenuItemValidation {
         updateActivity()
     }
 
+    /// CI window servers may keep the occlusion state non-visible forever, even
+    /// for on-screen windows; tests flip this to keep exercising the animation
+    /// pipeline while production still pauses fully covered windows.
+    static var bypassOcclusionForTesting = false
+
     /// Headless window servers (CI runners) may never deliver occlusion
     /// notifications, so visibility is also re-checked on every tick and by a
     /// low-frequency watchdog that survives while the animation is suspended.
     private var isAnimationVisible: Bool {
-        window?.isVisible == true && window?.occlusionState.contains(.visible) == true &&
+        window?.isVisible == true &&
+            (Self.bypassOcclusionForTesting || window?.occlusionState.contains(.visible) == true) &&
             window?.isMiniaturized == false && !NSApp.isHidden && !displayAsleep && !sessionInactive
     }
 

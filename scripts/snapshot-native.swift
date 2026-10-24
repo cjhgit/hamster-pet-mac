@@ -118,6 +118,9 @@ import CoreText
         let dayView = HamsterView(frame: view.frame, seed: 11042, preferences: UserDefaults(suiteName: suiteName)!, prefers3D: false)
         precondition(dayView.menu(for: contextEvent)!.item(at: 3)!.state == .off)
         print("PASS: night lighting falls off with distance, day/night restore exactly, and theme preferences persist")
+        // Updated CI images may never set the visible occlusion bit; bypass that
+        // gate here so start/pause/resume still gets exercised headlessly.
+        HamsterView.bypassOcclusionForTesting = true
         let appDelegate = AppDelegate(preferences: preferences)
         appDelegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         defer {
