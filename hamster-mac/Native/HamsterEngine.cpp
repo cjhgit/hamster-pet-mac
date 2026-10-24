@@ -86,6 +86,7 @@ struct Engine {
     double pettingBrakeMilliseconds=0,pettingStrideScale=1;
     bool pettingSettled=false;
     bool cushionSleepRequested=false;
+    bool cushionSleepExplicit=false;
     double sleepPoseBlend=0;
     double cushionX=220;
     std::vector<HamsterVertex> metalVertices;
@@ -299,9 +300,18 @@ V cushionSleepDecision(V h,const Args&){
     }
     return {};
 }
+// The original idle timeout picked a random destination. Both automatic and
+// explicitly requested sleep must use the same bed navigation and arrival gate.
+V cushionAutoSleep(V,const Args&){
+    if(E->cushionSleepRequested)return {};
+    HamsterEngineRequestSleep(E,E->cushionX);
+    E->cushionSleepExplicit=false;
+    return {};
+}
 void cancelCushionSleep(V h){
     if(!E->cushionSleepRequested)return;
     E->cushionSleepRequested=false;
+    E->cushionSleepExplicit=false;
     for(auto it=E->timers.begin();it!=E->timers.end();){
         if(it->second.target.o==h.o && text(it->second.method)=="sleep")it=E->timers.erase(it);
         else ++it;
@@ -482,7 +492,7 @@ void drawClip(V v,CGContextRef ctx,double alpha=1,bool night=false,bool cache=tr
 void *HamsterEngineCreate(uint32_t seed){auto *engine=new Engine(seed);E=engine;initializeRuntime();return engine;}
 void HamsterEngineDestroy(void *engine){delete static_cast<Engine*>(engine);if(E==engine)E=nullptr;}
 void HamsterEngineSetColor(void *engine,const char *name,uint32_t color){E=static_cast<Engine*>(engine);char hex[7];snprintf(hex,sizeof(hex),"%06X",color&0xffffff);R(E->root,E->key(std::string("up_")+name))=string(hex);}
-void HamsterEngineStart(void *engine){E=static_cast<Engine*>(engine);initializeTimeline(E->root,{});HamsterEngineStep(engine,0);E->collect();}
+void HamsterEngineStart(void *engine){E=static_cast<Engine*>(engine);initializeTimeline(E->root,{});R(G(E->root,P_ham),P_goToSleep)=function(cushionAutoSleep);HamsterEngineStep(engine,0);E->collect();}
 void HamsterEngineSetWatermarkVisible(void *engine,int visible){E=static_cast<Engine*>(engine);R(G(E->root,P_txt),P__visible)=V(visible!=0);}
 void HamsterEngineStep(void *engine,double elapsed){
     E=static_cast<Engine*>(engine);
@@ -517,8 +527,9 @@ void HamsterEngineStep(void *engine,double elapsed){
 void HamsterEngineRequestSleep(void *engine,double x){
     E=static_cast<Engine*>(engine);
     V h=G(E->root,P_ham);
-    if(E->cushionSleepRequested)return;
+    if(E->cushionSleepRequested){E->cushionSleepExplicit=true;return;}
     E->pettingMilliseconds=0;
+    E->cushionSleepExplicit=true;
     E->cushionSleepRequested=true;
     E->cushionX=std::clamp(x,60.0,240.0);
     // Old action callbacks must not interrupt arrival or wake it on the bed.
@@ -556,7 +567,7 @@ void HamsterEngineRequestDrink(void *engine){
     R(h,P_waterLevel)=V(0);
     if(!bool(G(h,P_eating))&&!bool(G(h,P_cleaning)))Hamster_decideWhatToDo(h,{});
 }
-void HamsterEngineMouse(void *engine,double x,double y,int action){E=static_cast<Engine*>(engine);if(action!=2){R(E->root,P__xmouse)=V(x);R(E->root,P__ymouse)=V(y);}if(action==0)call(E->root,P_onMouseMove,{});if(action==1){cancelCushionSleep(G(E->root,P_ham));E->pettingMilliseconds=0;call(E->root,P_onMouseMove,{});call(E->root,P_onMouseDown,{});}if(action==2)call(E->root,P_onMouseUp,{});}
+void HamsterEngineMouse(void *engine,double x,double y,int action){E=static_cast<Engine*>(engine);if(action==0&&E->cushionSleepRequested&&!E->cushionSleepExplicit)cancelCushionSleep(G(E->root,P_ham));if(action!=2){R(E->root,P__xmouse)=V(x);R(E->root,P__ymouse)=V(y);}if(action==0)call(E->root,P_onMouseMove,{});if(action==1){cancelCushionSleep(G(E->root,P_ham));E->pettingMilliseconds=0;call(E->root,P_onMouseMove,{});call(E->root,P_onMouseDown,{});}if(action==2)call(E->root,P_onMouseUp,{});}
 void HamsterEnginePurgeRenderCache(void *engine){
     E=static_cast<Engine*>(engine);
     for(int key:{P_bg,P_wheel}) {

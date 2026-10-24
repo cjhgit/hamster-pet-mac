@@ -77,3 +77,7 @@ extern "C" int HamsterTestHiddenByBodyFromAbove(HamsterRigPoint p){
     double hit=HamsterEngineHitBodySegment(E,{p.x,p.y+120,p.z,0},p);
     return hit>=0 && hit<.999;
 }
+
+extern "C" void HamsterTestScheduleAutomaticSleep(){
+    schedule(G(E->root,P_ham),string("goToSleep"),V(1));
+}

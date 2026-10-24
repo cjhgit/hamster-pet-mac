@@ -19,3 +19,5 @@ void HamsterTestSetGroundPosition(double x);
 double HamsterTestSkinDistance(HamsterRigPoint point);
 
 int HamsterTestHiddenByBodyFromAbove(HamsterRigPoint point);
+
+void HamsterTestScheduleAutomaticSleep(void);

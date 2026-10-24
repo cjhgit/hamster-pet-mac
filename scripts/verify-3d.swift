@@ -578,6 +578,40 @@ import Darwin
         for _ in 0..<180 { HamsterTestStep(); renderer.update(night: false) }
         precondition(earRoots.allSatisfy { $0.simdOrientation.angle < 0.001 }, "Sleeping ears must settle quietly")
         print("PASS: anchored ear skin/rim/fold, independent flicks, shared skeleton joints, frame-based pause and quiet sleep")
+        // Exercise the actual idle timer entry, including returning from the
+        // wheel and approaching the bed from either direction.
+        for scenario: Int32 in [0, 1, 2, 3, 4, 5, 7] {
+            HamsterTestConfigureScenario(scenario, scenario == 7 ? .pi : 0)
+            if scenario == 7 { HamsterTestSetGroundPosition(260) }
+            HamsterTestScheduleAutomaticSleep()
+            var settled = false
+            for _ in 0..<1800 {
+                HamsterTestStep()
+                renderer.update(night: false)
+                let state = HamsterEngineGetSceneStateForTest()
+                if state.preparingSleep != 0 || state.sleeping != 0 {
+                    precondition(state.onWheel == 0 && abs(state.x - 220) < 25,
+                                 "Automatic sleep must arrive at the cushion before lying down: scenario \(scenario), x \(state.x)")
+                }
+                if state.sleeping != 0 { settled = true; break }
+            }
+            precondition(settled, "Automatic sleep must complete from scenario \(scenario)")
+            for _ in 0..<120 { HamsterTestStep(); renderer.update(night: false) }
+            let resting = HamsterEngineGetSceneStateForTest()
+            precondition(resting.sleeping != 0 && abs(resting.x - 220) < 25)
+            precondition(abs(renderer.hamster.simdPosition.z - Float(Hamster3DScene.cushionCenter.z)) < 0.01)
+            if scenario == 0 {
+                renderer.preset(1)
+                try save("automatic-cushion-sleep")
+            }
+            // Automatic sleep remains wakeable by mouse movement.
+            renderer.preset(0)
+            let wakePoint = view.convert(renderer.view.convert(renderer.project(.init(0, 100, 42)), to: nil), from: nil)
+            view.mouseMoved(with: event(.mouseMoved, wakePoint))
+            HamsterTestStep()
+            precondition(HamsterEngineGetSceneStateForTest().sleeping == 0)
+        }
+        print("PASS: idle timer routes seven activities to the cushion, waits for arrival, remains on bed and wakes on mouse movement")
         print("Screenshots: \(output.path)")
     }
 }
